@@ -5,6 +5,7 @@ from flask import Flask
 from .config import Config
 from .extensions import db
 from .routes.health import health_bp
+from . import models  # noqa: F401  (registers all SQLAlchemy mappers)
 
 
 def create_app(config_object: type[Config] | None = None) -> Flask:
