@@ -1,10 +1,17 @@
+import uuid
+
 from ..extensions import db
 
 
 class Budget(db.Model):
     __tablename__ = "budgets"
 
-    id = db.Column(db.Uuid, primary_key=True, server_default=db.text("gen_random_uuid()"))
+    id = db.Column(
+        db.Uuid,
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=db.text("gen_random_uuid()"),
+    )
     user_id = db.Column(
         db.Uuid,
         db.ForeignKey("users.id", ondelete="CASCADE"),

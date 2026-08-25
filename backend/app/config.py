@@ -14,3 +14,14 @@ class Config:
     SECRET_KEY: str = os.environ.get("SECRET_KEY", "dev-only-not-for-production")
     SQLALCHEMY_DATABASE_URI: str = os.environ.get("DATABASE_URL", "sqlite:///:memory:")
     SQLALCHEMY_TRACK_MODIFICATIONS: bool = False
+
+
+class TestingConfig(Config):
+    """Configuration for the test suite.
+
+    Forces an isolated in-memory SQLite database so tests can never touch
+    the database configured via DATABASE_URL (e.g. Dockerized PostgreSQL).
+    """
+
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"

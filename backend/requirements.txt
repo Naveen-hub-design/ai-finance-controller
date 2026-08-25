@@ -6,3 +6,4 @@ pgvector==0.3.6
 celery==5.5.2
 redis==5.2.1
 gunicorn==23.0.0
+pytest==8.4.1

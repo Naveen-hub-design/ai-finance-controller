@@ -5,6 +5,7 @@ from flask import Flask
 from flask.testing import FlaskClient
 
 from app import create_app
+from app.config import TestingConfig
 from app.extensions import db
 
 
@@ -12,12 +13,12 @@ from app.extensions import db
 def app() -> Flask:
     """Return a configured app with a throwaway in-memory schema per test.
 
+    TestingConfig pins the app to in-memory SQLite regardless of any
+    DATABASE_URL in the environment, so tests never touch PostgreSQL.
     The production schema is owned by database/schema/*.sql; create_all()
-    here only builds a disposable copy inside SQLite so tests can run
-    without a PostgreSQL server.
+    here only builds a disposable copy inside SQLite.
     """
-    application = create_app()
-    application.config.update(TESTING=True)
+    application = create_app(TestingConfig)
 
     with application.app_context():
         db.create_all()
