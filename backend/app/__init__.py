@@ -11,6 +11,7 @@ from .routes.transactions import transactions_bp
 from .routes.categories import categories_bp
 from .routes.budgets import budgets_bp
 from .routes.financial_goals import financial_goals_bp
+from .routes.financial_summary import financial_summary_bp
 from . import models  # noqa: F401
 
 
@@ -28,5 +29,6 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     app.register_blueprint(categories_bp)
     app.register_blueprint(budgets_bp)
     app.register_blueprint(financial_goals_bp)
+    app.register_blueprint(financial_summary_bp)
 
     return app
