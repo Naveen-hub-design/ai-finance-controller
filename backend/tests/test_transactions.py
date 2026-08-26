@@ -139,6 +139,57 @@ def test_create_transaction_rejects_missing_category(client: FlaskClient) -> Non
     assert response.get_json()["error"] == "category not found"
 
 
+def test_create_transaction_rejects_cross_user_category(
+    client: FlaskClient,
+) -> None:
+    owner = _create_user(client)
+    other_user_response = client.post(
+        "/api/users",
+        json={"email": "other@example.com"},
+    )
+    assert other_user_response.status_code == 201
+    other_user = other_user_response.get_json()
+
+    account = _create_account(client, owner["id"])
+    foreign_category = _create_category(client, other_user["id"])
+
+    response = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "category_id": foreign_category["id"],
+            "amount": "100",
+            "transaction_type": "expense",
+            "transaction_date": "2026-08-24",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "category does not belong to user"
+
+
+def test_create_transaction_with_same_user_category_returns_201(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    account = _create_account(client, user["id"])
+    category = _create_category(client, user["id"])
+
+    response = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "category_id": category["id"],
+            "amount": "500",
+            "transaction_type": "expense",
+            "transaction_date": "2026-08-24",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.get_json()["category_id"] == category["id"]
+
+
 def test_create_transaction_rejects_invalid_transaction_type(
     client: FlaskClient,
 ) -> None:

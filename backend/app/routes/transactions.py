@@ -101,6 +101,9 @@ def create_transaction():
             if category is None:
                 return {"error": "category not found"}, 404
 
+            if category.user_id != account.user_id:
+                return {"error": "category does not belong to user"}, 400
+
         transaction = Transaction(
             account_id=account_id,
             category_id=category_id,

@@ -1,5 +1,6 @@
 """Financial summary API endpoint."""
 
+import uuid
 from decimal import Decimal
 
 from flask import Blueprint, current_app
@@ -7,7 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..extensions import db
-from ..models import Account, Transaction
+from ..models import Account, Transaction, User
 
 
 financial_summary_bp = Blueprint(
@@ -17,41 +18,71 @@ financial_summary_bp = Blueprint(
 )
 
 
-@financial_summary_bp.get("")
-def get_financial_summary():
+@financial_summary_bp.get("/<uuid:user_id>")
+def get_financial_summary(user_id: uuid.UUID):
+    try:
+        user = db.session.get(User, user_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("user lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if user is None:
+        return {"error": "user not found"}, 404
+
     try:
         income = (
             db.session.query(func.coalesce(func.sum(Transaction.amount), 0))
-            .filter(Transaction.transaction_type == "income")
+            .join(Account, Transaction.account_id == Account.id)
+            .filter(
+                Account.user_id == user_id,
+                Transaction.transaction_type == "income",
+            )
             .scalar()
         )
 
         expenses = (
             db.session.query(func.coalesce(func.sum(Transaction.amount), 0))
-            .filter(Transaction.transaction_type == "expense")
+            .join(Account, Transaction.account_id == Account.id)
+            .filter(
+                Account.user_id == user_id,
+                Transaction.transaction_type == "expense",
+            )
             .scalar()
         )
 
-        transaction_count = db.session.query(
-            func.count(Transaction.id)
-        ).scalar()
+        transaction_count = (
+            db.session.query(func.count(Transaction.id))
+            .join(Account, Transaction.account_id == Account.id)
+            .filter(Account.user_id == user_id)
+            .scalar()
+        )
 
-        income_transaction_count = db.session.query(
-            func.count(Transaction.id)
-        ).filter(
-            Transaction.transaction_type == "income"
-        ).scalar()
+        income_transaction_count = (
+            db.session.query(func.count(Transaction.id))
+            .join(Account, Transaction.account_id == Account.id)
+            .filter(
+                Account.user_id == user_id,
+                Transaction.transaction_type == "income",
+            )
+            .scalar()
+        )
 
-        expense_transaction_count = db.session.query(
-            func.count(Transaction.id)
-        ).filter(
-            Transaction.transaction_type == "expense"
-        ).scalar()
+        expense_transaction_count = (
+            db.session.query(func.count(Transaction.id))
+            .join(Account, Transaction.account_id == Account.id)
+            .filter(
+                Account.user_id == user_id,
+                Transaction.transaction_type == "expense",
+            )
+            .scalar()
+        )
 
         account_balance = (
             db.session.query(
                 func.coalesce(func.sum(Account.current_balance), 0)
-            ).scalar()
+            )
+            .filter(Account.user_id == user_id)
+            .scalar()
         )
 
     except SQLAlchemyError:
