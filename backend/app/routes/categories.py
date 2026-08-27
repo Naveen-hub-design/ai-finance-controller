@@ -94,3 +94,62 @@ def get_category(category_id: uuid.UUID):
         return {"error": "category not found"}, 404
 
     return _serialize_category(category), 200
+
+
+@categories_bp.put("/<uuid:category_id>")
+def update_category(category_id: uuid.UUID):
+    payload = request.get_json(silent=True)
+
+    if not isinstance(payload, dict):
+        return {"error": "request body must be valid JSON"}, 400
+
+    try:
+        category = db.session.get(Category, category_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("category lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if category is None:
+        return {"error": "category not found"}, 404
+
+    if "name" in payload:
+        name = payload["name"]
+        if not isinstance(name, str) or not name.strip():
+            return {"error": "name is required"}, 400
+        category.name = name.strip()
+
+    if "category_type" in payload:
+        if payload["category_type"] not in VALID_CATEGORY_TYPES:
+            return {"error": "invalid category_type"}, 400
+        category.category_type = payload["category_type"]
+
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("category update failed")
+        return {"error": "internal server error"}, 500
+
+    return _serialize_category(category), 200
+
+
+@categories_bp.delete("/<uuid:category_id>")
+def delete_category(category_id: uuid.UUID):
+    try:
+        category = db.session.get(Category, category_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("category lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if category is None:
+        return {"error": "category not found"}, 404
+
+    try:
+        db.session.delete(category)
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("category deletion failed")
+        return {"error": "internal server error"}, 500
+
+    return "", 204

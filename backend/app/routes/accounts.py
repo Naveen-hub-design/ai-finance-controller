@@ -116,3 +116,78 @@ def get_account(account_id: uuid.UUID):
         return {"error": "account not found"}, 404
 
     return _serialize_account(account), 200
+
+
+@accounts_bp.put("/<uuid:account_id>")
+def update_account(account_id: uuid.UUID):
+    payload = request.get_json(silent=True)
+
+    if not isinstance(payload, dict):
+        return {"error": "request body must be valid JSON"}, 400
+
+    try:
+        account = db.session.get(Account, account_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("account lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if account is None:
+        return {"error": "account not found"}, 404
+
+    if "name" in payload:
+        name = payload["name"]
+        if not isinstance(name, str) or not name.strip():
+            return {"error": "name is required"}, 400
+        account.name = name.strip()
+
+    if "account_type" in payload:
+        account_type = payload["account_type"]
+        if account_type not in VALID_ACCOUNT_TYPES:
+            return {"error": "invalid account_type"}, 400
+        account.account_type = account_type
+
+    if "currency" in payload:
+        currency = payload["currency"]
+        if not isinstance(currency, str) or len(currency.strip()) != 3:
+            return {"error": "currency must be a 3-letter code"}, 400
+        account.currency = currency.strip().upper()
+
+    if "current_balance" in payload:
+        try:
+            balance = Decimal(str(payload["current_balance"]))
+        except (InvalidOperation, ValueError, TypeError):
+            return {"error": "current_balance must be a valid number"}, 400
+        if balance < 0:
+            return {"error": "current_balance cannot be negative"}, 400
+        account.current_balance = balance
+
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("account update failed")
+        return {"error": "internal server error"}, 500
+
+    return _serialize_account(account), 200
+
+
+@accounts_bp.delete("/<uuid:account_id>")
+def delete_account(account_id: uuid.UUID):
+    try:
+        account = db.session.get(Account, account_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("account lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if account is None:
+        return {"error": "account not found"}, 404
+
+    try:
+        db.session.delete(account)
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("account deletion failed")
+        return {"error": "internal server error"}, 500
+
+    return "", 204

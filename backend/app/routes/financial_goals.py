@@ -140,3 +140,93 @@ def get_goal(goal_id: uuid.UUID):
         return {"error": "financial goal not found"}, 404
 
     return _serialize_goal(goal), 200
+
+
+@financial_goals_bp.put("/<uuid:goal_id>")
+def update_goal(goal_id: uuid.UUID):
+    payload = request.get_json(silent=True)
+
+    if not isinstance(payload, dict):
+        return {"error": "request body must be valid JSON"}, 400
+
+    try:
+        goal = db.session.get(FinancialGoal, goal_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("financial goal lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if goal is None:
+        return {"error": "financial goal not found"}, 404
+
+    if "name" in payload:
+        name = payload["name"]
+        if not isinstance(name, str) or not name.strip():
+            return {"error": "name is required"}, 400
+        goal.name = name.strip()
+
+    if "target_amount" in payload:
+        try:
+            target_amount = Decimal(str(payload["target_amount"]))
+        except (InvalidOperation, ValueError, TypeError):
+            return {"error": "target_amount must be a valid number"}, 400
+        if target_amount <= 0:
+            return {"error": "target_amount must be greater than zero"}, 400
+        goal.target_amount = target_amount
+
+    if "current_amount" in payload:
+        try:
+            current_amount = Decimal(str(payload["current_amount"]))
+        except (InvalidOperation, ValueError, TypeError):
+            return {"error": "current_amount must be a valid number"}, 400
+        if current_amount < 0:
+            return {"error": "current_amount cannot be negative"}, 400
+        goal.current_amount = current_amount
+
+    if goal.current_amount > goal.target_amount:
+        return {"error": "current_amount cannot exceed target_amount"}, 400
+
+    if "status" in payload:
+        if payload["status"] not in VALID_STATUSES:
+            return {"error": "invalid status"}, 400
+        goal.status = payload["status"]
+
+    if "target_date" in payload:
+        target_date_raw = payload["target_date"]
+        if target_date_raw is None:
+            goal.target_date = None
+        else:
+            try:
+                goal.target_date = date.fromisoformat(str(target_date_raw))
+            except (ValueError, TypeError):
+                return {"error": "target_date must be YYYY-MM-DD"}, 400
+
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("financial goal update failed")
+        return {"error": "internal server error"}, 500
+
+    return _serialize_goal(goal), 200
+
+
+@financial_goals_bp.delete("/<uuid:goal_id>")
+def delete_goal(goal_id: uuid.UUID):
+    try:
+        goal = db.session.get(FinancialGoal, goal_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("financial goal lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if goal is None:
+        return {"error": "financial goal not found"}, 404
+
+    try:
+        db.session.delete(goal)
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("financial goal deletion failed")
+        return {"error": "internal server error"}, 500
+
+    return "", 204

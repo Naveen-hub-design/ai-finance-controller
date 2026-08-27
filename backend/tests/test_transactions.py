@@ -276,3 +276,284 @@ def test_get_nonexistent_transaction_returns_404(client: FlaskClient) -> None:
 
     assert response.status_code == 404
     assert response.get_json()["error"] == "transaction not found"
+
+
+# ── PUT /api/transactions/<uuid:transaction_id> ──────────────────────
+
+
+def test_update_transaction_returns_200(client: FlaskClient) -> None:
+    user = _create_user(client)
+    account = _create_account(client, user["id"])
+
+    created = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "amount": "100",
+            "transaction_type": "expense",
+            "transaction_date": "2026-08-24",
+        },
+    )
+    assert created.status_code == 201
+    tx = created.get_json()
+
+    response = client.put(
+        f"/api/transactions/{tx['id']}",
+        json={"amount": "999.99", "description": "Updated"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["amount"] == "999.9900"
+    assert body["description"] == "Updated"
+    assert body["id"] == tx["id"]
+    assert body["account_id"] == tx["account_id"]
+
+
+def test_update_transaction_preserves_untouched_fields(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    account = _create_account(client, user["id"])
+
+    created = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "amount": "500",
+            "transaction_type": "income",
+            "description": "Salary",
+            "transaction_date": "2026-08-01",
+        },
+    )
+    assert created.status_code == 201
+    tx = created.get_json()
+
+    response = client.put(
+        f"/api/transactions/{tx['id']}",
+        json={"amount": "750"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["amount"] == "750.0000"
+    assert body["transaction_type"] == "income"
+    assert body["description"] == "Salary"
+    assert body["transaction_date"] == "2026-08-01"
+    assert body["account_id"] == tx["account_id"]
+
+
+def test_update_transaction_rejects_invalid_transaction_type(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    account = _create_account(client, user["id"])
+
+    created = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "amount": "100",
+            "transaction_type": "expense",
+            "transaction_date": "2026-08-24",
+        },
+    )
+    assert created.status_code == 201
+    tx = created.get_json()
+
+    response = client.put(
+        f"/api/transactions/{tx['id']}",
+        json={"transaction_type": "invalid"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "invalid transaction_type"
+
+
+def test_update_transaction_rejects_invalid_amount(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    account = _create_account(client, user["id"])
+
+    created = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "amount": "100",
+            "transaction_type": "expense",
+            "transaction_date": "2026-08-24",
+        },
+    )
+    assert created.status_code == 201
+    tx = created.get_json()
+
+    response = client.put(
+        f"/api/transactions/{tx['id']}",
+        json={"amount": "not-a-number"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "amount must be a valid number"
+
+
+def test_update_transaction_rejects_invalid_date(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    account = _create_account(client, user["id"])
+
+    created = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "amount": "100",
+            "transaction_type": "expense",
+            "transaction_date": "2026-08-24",
+        },
+    )
+    assert created.status_code == 201
+    tx = created.get_json()
+
+    response = client.put(
+        f"/api/transactions/{tx['id']}",
+        json={"transaction_date": "24-08-2026"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "transaction_date must be YYYY-MM-DD"
+
+
+def test_update_nonexistent_transaction_returns_404(
+    client: FlaskClient,
+) -> None:
+    response = client.put(
+        f"/api/transactions/{uuid.uuid4()}",
+        json={"amount": "100"},
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["error"] == "transaction not found"
+
+
+def test_update_transaction_rejects_cross_user_category(
+    client: FlaskClient,
+) -> None:
+    owner = _create_user(client)
+    other_response = client.post(
+        "/api/users",
+        json={"email": "other-cat@example.com"},
+    )
+    assert other_response.status_code == 201
+    other_user = other_response.get_json()
+
+    account = _create_account(client, owner["id"])
+    foreign_category = _create_category(client, other_user["id"])
+
+    created = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "amount": "100",
+            "transaction_type": "expense",
+            "transaction_date": "2026-08-24",
+        },
+    )
+    assert created.status_code == 201
+    tx = created.get_json()
+
+    response = client.put(
+        f"/api/transactions/{tx['id']}",
+        json={"category_id": foreign_category["id"]},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "category does not belong to user"
+
+
+def test_update_transaction_clears_category_to_null(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    account = _create_account(client, user["id"])
+    category = _create_category(client, user["id"])
+
+    created = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "category_id": category["id"],
+            "amount": "200",
+            "transaction_type": "expense",
+            "transaction_date": "2026-08-24",
+        },
+    )
+    assert created.status_code == 201
+    tx = created.get_json()
+    assert tx["category_id"] == category["id"]
+
+    response = client.put(
+        f"/api/transactions/{tx['id']}",
+        json={"category_id": None},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["category_id"] is None
+
+
+# ── DELETE /api/transactions/<uuid:transaction_id> ───────────────────
+
+
+def test_delete_transaction_returns_204(client: FlaskClient) -> None:
+    user = _create_user(client)
+    account = _create_account(client, user["id"])
+
+    created = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "amount": "100",
+            "transaction_type": "expense",
+            "transaction_date": "2026-08-24",
+        },
+    )
+    assert created.status_code == 201
+    tx = created.get_json()
+
+    response = client.delete(f"/api/transactions/{tx['id']}")
+
+    assert response.status_code == 204
+    assert response.data == b""
+
+
+def test_deleted_transaction_cannot_be_fetched(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    account = _create_account(client, user["id"])
+
+    created = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "amount": "100",
+            "transaction_type": "expense",
+            "transaction_date": "2026-08-24",
+        },
+    )
+    assert created.status_code == 201
+    tx = created.get_json()
+
+    client.delete(f"/api/transactions/{tx['id']}")
+
+    response = client.get(f"/api/transactions/{tx['id']}")
+    assert response.status_code == 404
+
+
+def test_delete_nonexistent_transaction_returns_404(
+    client: FlaskClient,
+) -> None:
+    response = client.delete(f"/api/transactions/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    assert response.get_json()["error"] == "transaction not found"

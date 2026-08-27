@@ -144,3 +144,96 @@ def get_budget(budget_id: uuid.UUID):
         return {"error": "budget not found"}, 404
 
     return _serialize_budget(budget), 200
+
+
+@budgets_bp.put("/<uuid:budget_id>")
+def update_budget(budget_id: uuid.UUID):
+    payload = request.get_json(silent=True)
+
+    if not isinstance(payload, dict):
+        return {"error": "request body must be valid JSON"}, 400
+
+    try:
+        budget = db.session.get(Budget, budget_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("budget lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if budget is None:
+        return {"error": "budget not found"}, 404
+
+    if "amount" in payload:
+        try:
+            amount = Decimal(str(payload["amount"]))
+        except (InvalidOperation, ValueError, TypeError):
+            return {"error": "amount must be a valid number"}, 400
+        if amount <= 0:
+            return {"error": "amount must be greater than zero"}, 400
+        budget.amount = amount
+
+    if "period" in payload:
+        if payload["period"] not in VALID_PERIODS:
+            return {"error": "invalid period"}, 400
+        budget.period = payload["period"]
+
+    if "start_date" in payload:
+        try:
+            budget.start_date = date.fromisoformat(str(payload["start_date"]))
+        except (ValueError, TypeError):
+            return {"error": "start_date must be YYYY-MM-DD"}, 400
+
+    if "end_date" in payload:
+        try:
+            budget.end_date = date.fromisoformat(str(payload["end_date"]))
+        except (ValueError, TypeError):
+            return {"error": "end_date must be YYYY-MM-DD"}, 400
+
+    if budget.end_date < budget.start_date:
+        return {"error": "end_date cannot be before start_date"}, 400
+
+    if "category_id" in payload:
+        category_id_raw = payload["category_id"]
+        if category_id_raw is None:
+            budget.category_id = None
+        else:
+            try:
+                new_category_id = uuid.UUID(str(category_id_raw))
+            except (ValueError, AttributeError, TypeError):
+                return {"error": "category_id must be a valid UUID"}, 400
+            category = db.session.get(Category, new_category_id)
+            if category is None:
+                return {"error": "category not found"}, 404
+            if category.user_id != budget.user_id:
+                return {"error": "category does not belong to user"}, 400
+            budget.category_id = new_category_id
+
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("budget update failed")
+        return {"error": "internal server error"}, 500
+
+    return _serialize_budget(budget), 200
+
+
+@budgets_bp.delete("/<uuid:budget_id>")
+def delete_budget(budget_id: uuid.UUID):
+    try:
+        budget = db.session.get(Budget, budget_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("budget lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if budget is None:
+        return {"error": "budget not found"}, 404
+
+    try:
+        db.session.delete(budget)
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("budget deletion failed")
+        return {"error": "internal server error"}, 500
+
+    return "", 204

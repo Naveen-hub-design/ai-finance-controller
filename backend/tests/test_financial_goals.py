@@ -315,3 +315,295 @@ def test_get_nonexistent_goal_returns_404(client: FlaskClient) -> None:
 
     assert response.status_code == 404
     assert response.get_json()["error"] == "financial goal not found"
+
+
+# ── PUT /api/financial-goals/<uuid:goal_id> ──────────────────────────
+
+
+def test_update_goal_returns_200(client: FlaskClient) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={
+            "name": "Retirement Savings",
+            "target_amount": "200000",
+            "current_amount": "50000",
+            "target_date": "2030-12-31",
+            "status": "paused",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["name"] == "Retirement Savings"
+    assert body["target_amount"] == "200000.0000"
+    assert body["current_amount"] == "50000.0000"
+    assert body["target_date"] == "2030-12-31"
+    assert body["status"] == "paused"
+    assert body["id"] == goal["id"]
+    assert body["user_id"] == user["id"]
+
+
+def test_update_goal_preserves_untouched_fields(client: FlaskClient) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={"name": "Updated Name"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["name"] == "Updated Name"
+    assert body["target_amount"] == goal["target_amount"]
+    assert body["current_amount"] == goal["current_amount"]
+    assert body["target_date"] == goal["target_date"]
+    assert body["status"] == goal["status"]
+    assert body["user_id"] == user["id"]
+
+
+def test_update_goal_rejects_invalid_name(client: FlaskClient) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={"name": 123},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "name is required"
+
+
+def test_update_goal_rejects_blank_name(client: FlaskClient) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={"name": "   "},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "name is required"
+
+
+def test_update_goal_rejects_invalid_target_amount(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={"target_amount": "abc"},
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.get_json()["error"] == "target_amount must be a valid number"
+    )
+
+
+def test_update_goal_rejects_non_positive_target_amount(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    for value in ("0", "-500"):
+        response = client.put(
+            f"/api/financial-goals/{goal['id']}",
+            json={"target_amount": value},
+        )
+        assert response.status_code == 400
+        assert (
+            response.get_json()["error"]
+            == "target_amount must be greater than zero"
+        )
+
+
+def test_update_goal_rejects_invalid_current_amount(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={"current_amount": "abc"},
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.get_json()["error"] == "current_amount must be a valid number"
+    )
+
+
+def test_update_goal_rejects_negative_current_amount(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={"current_amount": "-1"},
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.get_json()["error"] == "current_amount cannot be negative"
+    )
+
+
+def test_update_goal_rejects_current_amount_above_target(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={"current_amount": "999999"},
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.get_json()["error"]
+        == "current_amount cannot exceed target_amount"
+    )
+
+
+def test_update_goal_rejects_target_amount_below_current(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    goal = _create_goal(
+        client, user["id"], current_amount="8000", target_amount="10000"
+    )
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={"target_amount": "5000"},
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.get_json()["error"]
+        == "current_amount cannot exceed target_amount"
+    )
+
+
+def test_update_goal_allows_current_amount_equal_to_target(
+    client: FlaskClient,
+) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"], target_amount="10000")
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={"current_amount": "10000"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["current_amount"] == "10000.0000"
+
+
+def test_update_goal_rejects_invalid_target_date(client: FlaskClient) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={"target_date": "31/12/2026"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "target_date must be YYYY-MM-DD"
+
+
+def test_update_goal_rejects_invalid_status(client: FlaskClient) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={"status": "archived"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "invalid status"
+
+
+def test_update_nonexistent_goal_returns_404(client: FlaskClient) -> None:
+    response = client.put(
+        f"/api/financial-goals/{uuid.uuid4()}",
+        json={"name": "No Goal"},
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["error"] == "financial goal not found"
+
+
+def test_update_goal_rejects_invalid_json_body(client: FlaskClient) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        data="{not valid json",
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "request body must be valid JSON"
+
+
+def test_update_goal_does_not_change_user_id(client: FlaskClient) -> None:
+    user = _create_user(client)
+    other_user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.put(
+        f"/api/financial-goals/{goal['id']}",
+        json={"user_id": other_user["id"], "name": "Hacked Goal"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["user_id"] == user["id"]
+    assert body["name"] == "Hacked Goal"
+
+
+# ── DELETE /api/financial-goals/<uuid:goal_id> ───────────────────────
+
+
+def test_delete_goal_returns_204(client: FlaskClient) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    response = client.delete(f"/api/financial-goals/{goal['id']}")
+
+    assert response.status_code == 204
+    assert response.data == b""
+
+
+def test_deleted_goal_cannot_be_fetched(client: FlaskClient) -> None:
+    user = _create_user(client)
+    goal = _create_goal(client, user["id"])
+
+    client.delete(f"/api/financial-goals/{goal['id']}")
+
+    response = client.get(f"/api/financial-goals/{goal['id']}")
+    assert response.status_code == 404
+
+
+def test_delete_nonexistent_goal_returns_404(client: FlaskClient) -> None:
+    response = client.delete(f"/api/financial-goals/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    assert response.get_json()["error"] == "financial goal not found"
