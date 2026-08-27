@@ -15,6 +15,9 @@ class Config:
     SQLALCHEMY_DATABASE_URI: str = os.environ.get("DATABASE_URL", "sqlite:///:memory:")
     SQLALCHEMY_TRACK_MODIFICATIONS: bool = False
 
+    OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
+    OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
+
 
 class TestingConfig(Config):
     """Configuration for the test suite.

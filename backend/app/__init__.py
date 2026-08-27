@@ -13,6 +13,10 @@ from .routes.budgets import budgets_bp
 from .routes.financial_goals import financial_goals_bp
 from .routes.financial_summary import financial_summary_bp
 from .routes.financial_facts import financial_facts_bp
+from .routes.financial_explanation import financial_explanation_bp
+from .routes.financial_goal_intelligence import (
+    financial_goal_intelligence_bp,
+)
 from . import models  # noqa: F401
 
 
@@ -32,5 +36,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     app.register_blueprint(financial_goals_bp)
     app.register_blueprint(financial_summary_bp)
     app.register_blueprint(financial_facts_bp)
+    app.register_blueprint(financial_explanation_bp)
+    app.register_blueprint(financial_goal_intelligence_bp)
 
     return app
