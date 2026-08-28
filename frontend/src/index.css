@@ -64,4 +64,28 @@
   .focus-ring {
     box-shadow: theme("boxShadow.focus");
   }
+
+  .skip-link {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 60;
+    margin: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    background-color: theme("colors.accent.600");
+    color: #ffffff;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transform: translateY(-250%);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.15s ease, opacity 0.15s ease;
+  }
+
+  .skip-link:focus-visible {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
 }

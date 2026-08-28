@@ -6,8 +6,3 @@ export interface NavItem {
   icon: LucideIcon;
   end?: boolean;
 }
-
-export interface PageMeta {
-  title: string;
-  description: string;
-}

@@ -5,10 +5,12 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, current_app, request
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from ..extensions import db
-from ..models import Budget, Category, User
+from ..models import Account, Budget, Category, Transaction, User
+from .users import users_bp
 
 budgets_bp = Blueprint(
     "budgets",
@@ -237,3 +239,94 @@ def delete_budget(budget_id: uuid.UUID):
         return {"error": "internal server error"}, 500
 
     return "", 204
+
+
+def _budget_spending(user_id, budgets) -> dict:
+    """Return ``{budget_id: spent Decimal}`` for a user's budgets.
+
+    Spending is computed precisely from the database, per budget:
+
+    - only expense transactions on accounts owned by the user,
+    - only transactions whose ``transaction_date`` falls inclusively within the
+      budget's ``[start_date, end_date]`` window,
+    - when the budget has a ``category_id``, only transactions with the same
+      ``category_id``; otherwise every qualifying expense in the window counts.
+
+    A single aggregated ``SUM`` query is used (never loading transactions into
+    Python), grouped by budget id, and mapped back to budgets in Python.
+    """
+    if not budgets:
+        return {}
+
+    user_account_ids = select(Account.id).where(Account.user_id == user_id)
+
+    rows = (
+        db.session.query(
+            Budget.id,
+            func.coalesce(func.sum(Transaction.amount), 0),
+        )
+        .outerjoin(
+            Transaction,
+            and_(
+                Transaction.account_id.in_(user_account_ids),
+                Transaction.transaction_type == "expense",
+                Transaction.transaction_date >= Budget.start_date,
+                Transaction.transaction_date <= Budget.end_date,
+                or_(
+                    Budget.category_id.is_(None),
+                    Transaction.category_id == Budget.category_id,
+                ),
+            ),
+        )
+        .filter(Budget.user_id == user_id)
+        .group_by(Budget.id)
+        .all()
+    )
+
+    return {str(budget_id): Decimal(str(spent)) for budget_id, spent in rows}
+
+
+@users_bp.get("/<uuid:user_id>/budgets")
+def list_budgets(user_id: uuid.UUID):
+    """List a user's budgets with precise spending/progress information."""
+    try:
+        user = db.session.get(User, user_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("user lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if user is None:
+        return {"error": "user not found"}, 404
+
+    try:
+        budgets = (
+            db.session.execute(
+                select(Budget)
+                .where(Budget.user_id == user_id)
+                .order_by(Budget.start_date.asc(), Budget.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+    except SQLAlchemyError:
+        current_app.logger.exception("budget list failed")
+        return {"error": "internal server error"}, 500
+
+    spending = _budget_spending(user_id, budgets)
+
+    result = []
+    for budget in budgets:
+        data = _serialize_budget(budget)
+        amount = Decimal(str(budget.amount))
+        spent = spending.get(str(budget.id), Decimal("0"))
+        remaining = amount - spent
+        progress = (spent / amount * Decimal("100")) if amount > 0 else Decimal("0")
+        data["spent"] = f"{spent:.4f}"
+        data["remaining"] = f"{remaining:.4f}"
+        data["progress_percent"] = f"{progress:.2f}"
+        result.append(data)
+
+    return {
+        "user_id": str(user_id),
+        "budgets": result,
+    }, 200

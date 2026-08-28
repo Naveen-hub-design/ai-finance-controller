@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from ..extensions import db
 from ..models import Account, User
+from .users import users_bp
 
 accounts_bp = Blueprint("accounts", __name__, url_prefix="/api/accounts")
 
@@ -191,3 +192,35 @@ def delete_account(account_id: uuid.UUID):
         return {"error": "internal server error"}, 500
 
     return "", 204
+
+
+@users_bp.get("/<uuid:user_id>/accounts")
+def list_accounts(user_id: uuid.UUID):
+    """List all accounts belonging to a user."""
+    try:
+        user = db.session.get(User, user_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("user lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if user is None:
+        return {"error": "user not found"}, 404
+
+    try:
+        accounts = (
+            db.session.execute(
+                select(Account)
+                .where(Account.user_id == user_id)
+                .order_by(Account.created_at.asc(), Account.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+    except SQLAlchemyError:
+        current_app.logger.exception("account list failed")
+        return {"error": "internal server error"}, 500
+
+    return {
+        "user_id": str(user_id),
+        "accounts": [_serialize_account(account) for account in accounts],
+    }, 200

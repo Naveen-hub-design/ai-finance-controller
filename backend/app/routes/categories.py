@@ -3,10 +3,12 @@
 import uuid
 
 from flask import Blueprint, current_app, request
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from ..extensions import db
 from ..models import Category, User
+from .users import users_bp
 
 categories_bp = Blueprint(
     "categories",
@@ -153,3 +155,39 @@ def delete_category(category_id: uuid.UUID):
         return {"error": "internal server error"}, 500
 
     return "", 204
+
+
+@users_bp.get("/<uuid:user_id>/categories")
+def list_categories(user_id: uuid.UUID):
+    """List categories belonging to a user.
+
+    Only the user's own categories are returned; rows where ``user_id`` is
+    NULL are intentionally excluded.
+    """
+    try:
+        user = db.session.get(User, user_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("user lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if user is None:
+        return {"error": "user not found"}, 404
+
+    try:
+        categories = (
+            db.session.execute(
+                select(Category)
+                .where(Category.user_id == user_id)
+                .order_by(Category.created_at.asc(), Category.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+    except SQLAlchemyError:
+        current_app.logger.exception("category list failed")
+        return {"error": "internal server error"}, 500
+
+    return {
+        "user_id": str(user_id),
+        "categories": [_serialize_category(category) for category in categories],
+    }, 200

@@ -5,10 +5,12 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, current_app, request
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from ..extensions import db
 from ..models import FinancialGoal, User
+from .users import users_bp
 
 financial_goals_bp = Blueprint(
     "financial_goals",
@@ -230,3 +232,35 @@ def delete_goal(goal_id: uuid.UUID):
         return {"error": "internal server error"}, 500
 
     return "", 204
+
+
+@users_bp.get("/<uuid:user_id>/financial-goals")
+def list_goals(user_id: uuid.UUID):
+    """List all financial goals belonging to a user."""
+    try:
+        user = db.session.get(User, user_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("user lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if user is None:
+        return {"error": "user not found"}, 404
+
+    try:
+        goals = (
+            db.session.execute(
+                select(FinancialGoal)
+                .where(FinancialGoal.user_id == user_id)
+                .order_by(FinancialGoal.created_at.asc(), FinancialGoal.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+    except SQLAlchemyError:
+        current_app.logger.exception("financial goal list failed")
+        return {"error": "internal server error"}, 500
+
+    return {
+        "user_id": str(user_id),
+        "financial_goals": [_serialize_goal(goal) for goal in goals],
+    }, 200

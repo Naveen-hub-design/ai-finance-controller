@@ -5,10 +5,12 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, current_app, request
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from ..extensions import db
-from ..models import Account, Category, Transaction
+from ..models import Account, Category, Transaction, User
+from .users import users_bp
 
 transactions_bp = Blueprint(
     "transactions",
@@ -247,3 +249,113 @@ def delete_transaction(transaction_id: uuid.UUID):
         return {"error": "internal server error"}, 500
 
     return "", 204
+
+
+@users_bp.get("/<uuid:user_id>/transactions")
+def list_transactions(user_id: uuid.UUID):
+    """List a user's transactions with optional filters and pagination.
+
+    Returns only transactions on accounts owned by ``user_id`` and does not
+    trust any client-supplied ownership hint.
+    """
+    try:
+        user = db.session.get(User, user_id)
+    except SQLAlchemyError:
+        current_app.logger.exception("user lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if user is None:
+        return {"error": "user not found"}, 404
+
+    transaction_type = request.args.get("transaction_type")
+    if transaction_type is not None:
+        transaction_type = transaction_type.strip()
+        if transaction_type not in VALID_TRANSACTION_TYPES:
+            return {"error": "invalid transaction_type"}, 400
+
+    date_from = None
+    date_from_raw = request.args.get("date_from")
+    if date_from_raw is not None:
+        try:
+            date_from = date.fromisoformat(date_from_raw)
+        except (ValueError, TypeError):
+            return {"error": "date_from must be YYYY-MM-DD"}, 400
+
+    date_to = None
+    date_to_raw = request.args.get("date_to")
+    if date_to_raw is not None:
+        try:
+            date_to = date.fromisoformat(date_to_raw)
+        except (ValueError, TypeError):
+            return {"error": "date_to must be YYYY-MM-DD"}, 400
+
+    if date_from is not None and date_to is not None and date_from > date_to:
+        return {"error": "date_from cannot be after date_to"}, 400
+
+    search = request.args.get("search")
+    if search is not None:
+        search = search.strip()
+        if search == "":
+            search = None
+
+    try:
+        page = int(request.args.get("page", "1"))
+    except (ValueError, TypeError):
+        return {"error": "page must be a positive integer"}, 400
+    if page < 1:
+        return {"error": "page must be a positive integer"}, 400
+
+    try:
+        page_size = int(request.args.get("page_size", "25"))
+    except (ValueError, TypeError):
+        return {"error": "page_size must be an integer between 1 and 100"}, 400
+    if page_size < 1 or page_size > 100:
+        return {"error": "page_size must be an integer between 1 and 100"}, 400
+
+    conditions = [Account.user_id == user_id]
+    if transaction_type is not None:
+        conditions.append(Transaction.transaction_type == transaction_type)
+    if date_from is not None:
+        conditions.append(Transaction.transaction_date >= date_from)
+    if date_to is not None:
+        conditions.append(Transaction.transaction_date <= date_to)
+    if search is not None:
+        conditions.append(
+            func.lower(Transaction.description).contains(search.lower())
+        )
+
+    try:
+        total = db.session.execute(
+            select(func.count(Transaction.id))
+            .join(Account, Transaction.account_id == Account.id)
+            .where(*conditions)
+        ).scalar_one()
+
+        offset = (page - 1) * page_size
+        transactions = (
+            db.session.execute(
+                select(Transaction)
+                .join(Account, Transaction.account_id == Account.id)
+                .where(*conditions)
+                .order_by(
+                    Transaction.transaction_date.desc(),
+                    Transaction.created_at.desc(),
+                    Transaction.id.asc(),
+                )
+                .limit(page_size)
+                .offset(offset)
+            )
+            .scalars()
+            .all()
+        )
+    except SQLAlchemyError:
+        current_app.logger.exception("transaction list failed")
+        return {"error": "internal server error"}, 500
+
+    return {
+        "user_id": str(user_id),
+        "transactions": [_serialize_transaction(tx) for tx in transactions],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }, 200
