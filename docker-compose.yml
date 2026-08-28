@@ -56,12 +56,19 @@ services:
 
   worker:
     build:
-      context: ./worker
+      context: .
+      dockerfile: worker/Dockerfile
     image: ai-finance-controller/worker:latest
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # Runtime config for future backend service access from the worker.
+      # The worker references the same backend/app package as the API.
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      SECRET_KEY: ${SECRET_KEY}
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:

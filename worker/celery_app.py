@@ -1,7 +1,8 @@
 """Celery application foundation for asynchronous finance tasks.
 
-No business tasks are defined in M01. Later milestones register tasks in
-the ``tasks`` package and reference them via the Celery ``include`` list.
+Business tasks are defined in the ``tasks`` package and referenced via the
+Celery ``include`` list. M4.5 Step 2 introduces the first one:
+``ai_controller.run_ai_controller``.
 """
 
 import os
@@ -24,4 +25,7 @@ celery.conf.update(
     accept_content=["json"],
     timezone="UTC",
     enable_utc=True,
+    # Acknowledge a job only after it finishes so transient failures may be
+    # retried and a crashed task is not silently lost.
+    task_acks_late=True,
 )
