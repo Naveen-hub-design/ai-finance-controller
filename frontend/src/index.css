@@ -1,31 +1,67 @@
-:root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  color: #e2e8f0;
-  background-color: #0f172a;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  * {
+    border-color: theme("colors.border");
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: theme("colors.background");
+    color: theme("colors.foreground");
+    font-family: theme("fontFamily.sans");
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: rgba(47, 111, 230, 0.35);
+    color: theme("colors.foreground");
+  }
+
+  :focus-visible {
+    outline: 2px solid theme("colors.accent.500");
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: theme("colors.border-strong");
+    border-radius: 9999px;
+    border: 2px solid theme("colors.background");
+  }
+
+  ::-webkit-scrollbar-track {
+    background-color: transparent;
+  }
 }
 
-body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-height: 100vh;
-}
+@layer components {
+  .surface-card {
+    background-color: theme("colors.surface");
+    border: 1px solid theme("colors.border");
+    border-radius: theme("borderRadius.xl");
+    box-shadow: theme("boxShadow.card");
+  }
 
-.app {
-  width: 100%;
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 3rem 1.5rem;
-  text-align: center;
-}
-
-.app h1 {
-  font-size: 2rem;
-  letter-spacing: -0.02em;
-}
-
-.app p {
-  color: #94a3b8;
-  font-size: 1.05rem;
+  .focus-ring {
+    box-shadow: theme("boxShadow.focus");
+  }
 }
