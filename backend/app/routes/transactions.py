@@ -5,11 +5,14 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, current_app, request
+from flask_jwt_extended import jwt_required
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from ..auth import get_current_user_id
 from ..extensions import db
 from ..models import Account, Category, Transaction, User
+from ._ownership import require_owner_or
 from .users import users_bp
 
 transactions_bp = Blueprint(
@@ -42,12 +45,25 @@ def _serialize_transaction(transaction: Transaction) -> dict:
     }
 
 
+def _transaction_owner_id(transaction: Transaction):
+    """Return the user id that owns ``transaction`` (via its account).
+
+    Resolves the Transaction -> Account -> User chain so ownership is never
+    inferred from any client-supplied value.
+    """
+    account = db.session.get(Account, transaction.account_id)
+    return account.user_id if account is not None else None
+
+
 @transactions_bp.post("")
+@jwt_required()
 def create_transaction():
     payload = request.get_json(silent=True)
 
     if not isinstance(payload, dict):
         return {"error": "request body must be valid JSON"}, 400
+
+    current_user_id = get_current_user_id()
 
     account_id_raw = payload.get("account_id")
     category_id_raw = payload.get("category_id")
@@ -97,6 +113,9 @@ def create_transaction():
         if account is None:
             return {"error": "account not found"}, 404
 
+        if account.user_id != current_user_id:
+            return {"error": "forbidden"}, 403
+
         if category_id is not None:
             category = db.session.get(Category, category_id)
 
@@ -132,6 +151,7 @@ def create_transaction():
 
 
 @transactions_bp.get("/<uuid:transaction_id>")
+@jwt_required()
 def get_transaction(transaction_id: uuid.UUID):
     try:
         transaction = db.session.get(Transaction, transaction_id)
@@ -142,10 +162,15 @@ def get_transaction(transaction_id: uuid.UUID):
     if transaction is None:
         return {"error": "transaction not found"}, 404
 
+    forbidden = require_owner_or(_transaction_owner_id(transaction))
+    if forbidden is not None:
+        return forbidden
+
     return _serialize_transaction(transaction), 200
 
 
 @transactions_bp.put("/<uuid:transaction_id>")
+@jwt_required()
 def update_transaction(transaction_id: uuid.UUID):
     payload = request.get_json(silent=True)
 
@@ -161,6 +186,14 @@ def update_transaction(transaction_id: uuid.UUID):
     if transaction is None:
         return {"error": "transaction not found"}, 404
 
+    forbidden = require_owner_or(_transaction_owner_id(transaction))
+    if forbidden is not None:
+        return forbidden
+
+    # The authenticated identity is the authoritative owner. Any target
+    # account/category the transaction is attached to must belong to it.
+    current_user_id = get_current_user_id()
+
     try:
         if "account_id" in payload:
             try:
@@ -170,6 +203,8 @@ def update_transaction(transaction_id: uuid.UUID):
             account = db.session.get(Account, new_account_id)
             if account is None:
                 return {"error": "account not found"}, 404
+            if account.user_id != current_user_id:
+                return {"error": "forbidden"}, 403
             transaction.account_id = new_account_id
 
         if "category_id" in payload:
@@ -230,6 +265,7 @@ def update_transaction(transaction_id: uuid.UUID):
 
 
 @transactions_bp.delete("/<uuid:transaction_id>")
+@jwt_required()
 def delete_transaction(transaction_id: uuid.UUID):
     try:
         transaction = db.session.get(Transaction, transaction_id)
@@ -239,6 +275,10 @@ def delete_transaction(transaction_id: uuid.UUID):
 
     if transaction is None:
         return {"error": "transaction not found"}, 404
+
+    forbidden = require_owner_or(_transaction_owner_id(transaction))
+    if forbidden is not None:
+        return forbidden
 
     try:
         db.session.delete(transaction)
@@ -252,12 +292,17 @@ def delete_transaction(transaction_id: uuid.UUID):
 
 
 @users_bp.get("/<uuid:user_id>/transactions")
+@jwt_required()
 def list_transactions(user_id: uuid.UUID):
     """List a user's transactions with optional filters and pagination.
 
     Returns only transactions on accounts owned by ``user_id`` and does not
-    trust any client-supplied ownership hint.
+    trust any client-supplied ownership hint. Owner only.
     """
+    forbidden = require_owner_or(user_id)
+    if forbidden is not None:
+        return forbidden
+
     try:
         user = db.session.get(User, user_id)
     except SQLAlchemyError:

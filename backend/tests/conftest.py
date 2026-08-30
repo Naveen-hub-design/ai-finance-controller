@@ -10,6 +10,32 @@ from app.config import TestingConfig
 from app.extensions import db
 
 
+def register_and_login(
+    client: FlaskClient,
+    email: str = "user@example.com",
+    password: str = "correct-horse-battery-staple",
+) -> dict:
+    """Register a user and log in, returning the login body.
+
+    Returns ``{"user": {...}, "access_token": "<jwt>"}``. The token is the
+    verified-identity proof used by every protected route (M7.4+).
+    """
+    created = client.post(
+        "/api/users",
+        json={"email": email, "full_name": "API Test User", "password": password},
+    )
+    assert created.status_code == 201, created.get_json()
+
+    login = client.post("/api/users/login", json={"email": email, "password": password})
+    assert login.status_code == 200, login.get_json()
+    return login.get_json()
+
+
+def auth_headers(token: str) -> dict[str, str]:
+    """Return the ``Authorization: Bearer`` header for ``token``."""
+    return {"Authorization": f"Bearer {token}"}
+
+
 @event.listens_for(db.Engine, "connect")
 def _set_sqlite_pragma(dbapi_conn, _connection_record):
     cursor = dbapi_conn.cursor()

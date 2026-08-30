@@ -19,10 +19,23 @@ def _create_user(
 ) -> dict:
     response = client.post(
         "/api/users",
-        json={"email": email, "name": "Controller Route User"},
+        json={"email": email, "name": "Controller Route User", "password": "test-password-123"},
     )
     assert response.status_code == 201, response.get_json()
-    return response.get_json()
+    user = response.get_json()
+    user["_token"] = _token_for(client, user["id"])
+    return user
+
+
+def _token_for(client: FlaskClient, identity) -> str:
+    from flask_jwt_extended import create_access_token
+
+    with client.application.app_context():
+        return create_access_token(identity=str(identity))
+
+
+def _headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _sample_source_facts() -> SourceFacts:
@@ -106,6 +119,7 @@ def test_successful_request(client: FlaskClient) -> None:
         response = client.post(
             f"/api/users/{user['id']}/ai-controller",
             json={"intent": "Why did my expenses increase?"},
+            headers=_headers(user["_token"]),
         )
 
     assert response.status_code == 200
@@ -132,6 +146,7 @@ def test_exact_response_serialization(client: FlaskClient) -> None:
         response = client.post(
             f"/api/users/{user['id']}/ai-controller",
             json={"intent": serialized["intent"]},
+            headers=_headers(user["_token"]),
         )
 
     assert response.status_code == 200
@@ -160,6 +175,7 @@ def test_exact_response_shape_from_to_dict(client: FlaskClient) -> None:
         response = client.post(
             f"/api/users/{user['id']}/ai-controller",
             json={"intent": "intent"},
+            headers=_headers(user["_token"]),
         )
 
     data = response.get_json()
@@ -203,6 +219,7 @@ def test_report_data_preserved_exactly(client: FlaskClient) -> None:
         response = client.post(
             f"/api/users/{user['id']}/ai-controller",
             json={"intent": "preserve me"},
+            headers=_headers(user["_token"]),
         )
 
     data = response.get_json()
@@ -231,6 +248,7 @@ def test_correct_user_id_passed_to_service(client: FlaskClient) -> None:
         client.post(
             f"/api/users/{user['id']}/ai-controller",
             json={"intent": "Question?"},
+            headers=_headers(user["_token"]),
         )
 
     args, _ = mock_service.call_args
@@ -244,6 +262,7 @@ def test_correct_intent_passed_to_service(client: FlaskClient) -> None:
         client.post(
             f"/api/users/{user['id']}/ai-controller",
             json={"intent": "My exact question"},
+            headers=_headers(user["_token"]),
         )
 
     args, _ = mock_service.call_args
@@ -257,6 +276,7 @@ def test_service_mocked_at_module_boundary(client: FlaskClient) -> None:
         client.post(
             f"/api/users/{user['id']}/ai-controller",
             json={"intent": "Question?"},
+            headers=_headers(user["_token"]),
         )
 
     mock_service.assert_called_once()
@@ -269,6 +289,7 @@ def test_route_delegates_to_controller_service(client: FlaskClient) -> None:
         client.post(
             f"/api/users/{user['id']}/ai-controller",
             json={"intent": "Question?"},
+            headers=_headers(user["_token"]),
         )
 
     mock_service.assert_called_once()
@@ -280,9 +301,11 @@ def test_route_delegates_to_controller_service(client: FlaskClient) -> None:
 
 
 def test_unknown_user_returns_404(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = client.post(
-        f"/api/users/{uuid.uuid4()}/ai-controller",
+        f"/api/users/{rid}/ai-controller",
         json={"intent": "Question?"},
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 404
@@ -299,56 +322,68 @@ def test_invalid_user_id_returns_404(client: FlaskClient) -> None:
 
 
 def test_missing_json_body_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = client.post(
-        f"/api/users/{uuid.uuid4()}/ai-controller",
+        f"/api/users/{rid}/ai-controller",
         data="",
         content_type="application/json",
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 400
 
 
 def test_invalid_json_body_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = client.post(
-        f"/api/users/{uuid.uuid4()}/ai-controller",
+        f"/api/users/{rid}/ai-controller",
         data="not json",
         content_type="application/json",
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 400
 
 
 def test_missing_intent_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = client.post(
-        f"/api/users/{uuid.uuid4()}/ai-controller",
+        f"/api/users/{rid}/ai-controller",
         json={},
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 400
 
 
 def test_null_intent_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = client.post(
-        f"/api/users/{uuid.uuid4()}/ai-controller",
+        f"/api/users/{rid}/ai-controller",
         json={"intent": None},
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 400
 
 
 def test_non_string_intent_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = client.post(
-        f"/api/users/{uuid.uuid4()}/ai-controller",
+        f"/api/users/{rid}/ai-controller",
         json={"intent": 123},
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 400
 
 
 def test_whitespace_intent_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = client.post(
-        f"/api/users/{uuid.uuid4()}/ai-controller",
+        f"/api/users/{rid}/ai-controller",
         json={"intent": "   "},
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 400
@@ -368,6 +403,7 @@ def test_service_sqlalchemy_error_returns_500(client: FlaskClient) -> None:
         response = client.post(
             f"/api/users/{user['id']}/ai-controller",
             json={"intent": "Question?"},
+            headers=_headers(user["_token"]),
         )
 
     assert response.status_code == 500
@@ -381,9 +417,11 @@ def test_user_lookup_error_returns_500(client: FlaskClient) -> None:
         "app.routes.m4_controller.db.session.get",
         side_effect=SQLAlchemyError("boom"),
     ):
+        rid = uuid.uuid4()
         response = client.post(
-            f"/api/users/{uuid.uuid4()}/ai-controller",
+            f"/api/users/{rid}/ai-controller",
             json={"intent": "Question?"},
+            headers=_headers(_token_for(client, rid)),
         )
 
     assert response.status_code == 500

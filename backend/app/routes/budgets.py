@@ -5,11 +5,14 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, current_app, request
+from flask_jwt_extended import jwt_required
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from ..auth import get_current_user_id
 from ..extensions import db
 from ..models import Account, Budget, Category, Transaction, User
+from ._ownership import require_owner_or
 from .users import users_bp
 
 budgets_bp = Blueprint(
@@ -44,11 +47,14 @@ def _serialize_budget(budget: Budget) -> dict:
 
 
 @budgets_bp.post("")
+@jwt_required()
 def create_budget():
     payload = request.get_json(silent=True)
 
     if not isinstance(payload, dict):
         return {"error": "request body must be valid JSON"}, 400
+
+    current_user_id = get_current_user_id()
 
     user_id_raw = payload.get("user_id")
     category_id_raw = payload.get("category_id")
@@ -57,10 +63,15 @@ def create_budget():
     start_date_raw = payload.get("start_date")
     end_date_raw = payload.get("end_date")
 
-    try:
-        user_id = uuid.UUID(str(user_id_raw))
-    except (ValueError, AttributeError, TypeError):
-        return {"error": "user_id must be a valid UUID"}, 400
+    # The authenticated identity is the authoritative owner. A client-supplied
+    # user_id never overrides it; a mismatched one is rejected.
+    if user_id_raw is not None:
+        try:
+            supplied_user_id = uuid.UUID(str(user_id_raw))
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "user_id must be a valid UUID"}, 400
+        if supplied_user_id != current_user_id:
+            return {"error": "forbidden"}, 403
 
     category_id = None
 
@@ -95,7 +106,7 @@ def create_budget():
         return {"error": "end_date cannot be before start_date"}, 400
 
     try:
-        user = db.session.get(User, user_id)
+        user = db.session.get(User, current_user_id)
 
         if user is None:
             return {"error": "user not found"}, 404
@@ -106,11 +117,11 @@ def create_budget():
             if category is None:
                 return {"error": "category not found"}, 404
 
-            if category.user_id != user_id:
+            if category.user_id != current_user_id:
                 return {"error": "category does not belong to user"}, 400
 
         budget = Budget(
-            user_id=user_id,
+            user_id=current_user_id,
             category_id=category_id,
             amount=amount,
             period=period,
@@ -135,6 +146,7 @@ def create_budget():
 
 
 @budgets_bp.get("/<uuid:budget_id>")
+@jwt_required()
 def get_budget(budget_id: uuid.UUID):
     try:
         budget = db.session.get(Budget, budget_id)
@@ -145,10 +157,15 @@ def get_budget(budget_id: uuid.UUID):
     if budget is None:
         return {"error": "budget not found"}, 404
 
+    forbidden = require_owner_or(budget.user_id)
+    if forbidden is not None:
+        return forbidden
+
     return _serialize_budget(budget), 200
 
 
 @budgets_bp.put("/<uuid:budget_id>")
+@jwt_required()
 def update_budget(budget_id: uuid.UUID):
     payload = request.get_json(silent=True)
 
@@ -163,6 +180,14 @@ def update_budget(budget_id: uuid.UUID):
 
     if budget is None:
         return {"error": "budget not found"}, 404
+
+    forbidden = require_owner_or(budget.user_id)
+    if forbidden is not None:
+        return forbidden
+
+    # Ownership cannot be transferred via the request body.
+    if "user_id" in payload:
+        return {"error": "forbidden"}, 403
 
     if "amount" in payload:
         try:
@@ -220,6 +245,7 @@ def update_budget(budget_id: uuid.UUID):
 
 
 @budgets_bp.delete("/<uuid:budget_id>")
+@jwt_required()
 def delete_budget(budget_id: uuid.UUID):
     try:
         budget = db.session.get(Budget, budget_id)
@@ -229,6 +255,10 @@ def delete_budget(budget_id: uuid.UUID):
 
     if budget is None:
         return {"error": "budget not found"}, 404
+
+    forbidden = require_owner_or(budget.user_id)
+    if forbidden is not None:
+        return forbidden
 
     try:
         db.session.delete(budget)
@@ -287,8 +317,13 @@ def _budget_spending(user_id, budgets) -> dict:
 
 
 @users_bp.get("/<uuid:user_id>/budgets")
+@jwt_required()
 def list_budgets(user_id: uuid.UUID):
-    """List a user's budgets with precise spending/progress information."""
+    """List a user's budgets with precise spending/progress information (owner only)."""
+    forbidden = require_owner_or(user_id)
+    if forbidden is not None:
+        return forbidden
+
     try:
         user = db.session.get(User, user_id)
     except SQLAlchemyError:

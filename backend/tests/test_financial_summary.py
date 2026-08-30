@@ -1,24 +1,34 @@
 """Tests for the financial summary API."""
 
-import uuid
-
 from flask.testing import FlaskClient
 
 
-def _create_user(client: FlaskClient, email: str = "summary@example.com") -> dict:
-    response = client.post(
+def _auth(
+    client: FlaskClient,
+    email: str = "summary@example.com",
+    password: str = "test-password-123",
+) -> tuple[dict, str]:
+    created = client.post(
         "/api/users",
-        json={
-            "email": email,
-            "name": "Summary User",
-        },
+        json={"email": email, "full_name": "Summary User", "password": password},
     )
-    assert response.status_code == 201, response.get_json()
-    return response.get_json()
+    assert created.status_code == 201, created.get_json()
+    login = client.post(
+        "/api/users/login",
+        json={"email": email, "password": password},
+    )
+    assert login.status_code == 200, login.get_json()
+    body = login.get_json()
+    return body["user"], body["access_token"]
+
+
+def _headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _create_account(
     client: FlaskClient,
+    token: str,
     user_id: str,
     name: str,
     balance: str,
@@ -32,6 +42,7 @@ def _create_account(
             "currency": "INR",
             "current_balance": balance,
         },
+        headers=_headers(token),
     )
     assert response.status_code == 201, response.get_json()
     return response.get_json()
@@ -39,6 +50,7 @@ def _create_account(
 
 def _create_transaction(
     client: FlaskClient,
+    token: str,
     account_id: str,
     amount: str,
     transaction_type: str,
@@ -52,15 +64,18 @@ def _create_transaction(
             "transaction_type": transaction_type,
             "transaction_date": transaction_date,
         },
+        headers=_headers(token),
     )
     assert response.status_code == 201, response.get_json()
     return response.get_json()
 
 
 def test_empty_summary_returns_zero_values(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
-    response = client.get(f"/api/financial-summary/{user['id']}")
+    response = client.get(
+        f"/api/financial-summary/{user['id']}", headers=_headers(token)
+    )
 
     assert response.status_code == 200
     assert response.get_json() == {
@@ -77,29 +92,34 @@ def test_empty_summary_returns_zero_values(client: FlaskClient) -> None:
 def test_summary_calculates_income_and_expenses(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"], "Main Bank", "10000")
+    user, token = _auth(client)
+    account = _create_account(client, token, user["id"], "Main Bank", "10000")
 
     _create_transaction(
         client,
+        token,
         account["id"],
         "5000",
         "income",
     )
     _create_transaction(
         client,
+        token,
         account["id"],
         "1250.50",
         "expense",
     )
     _create_transaction(
         client,
+        token,
         account["id"],
         "750.25",
         "expense",
     )
 
-    response = client.get(f"/api/financial-summary/{user['id']}")
+    response = client.get(
+        f"/api/financial-summary/{user['id']}", headers=_headers(token)
+    )
 
     assert response.status_code == 200
 
@@ -117,22 +137,26 @@ def test_summary_calculates_income_and_expenses(
 def test_summary_includes_multiple_accounts(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     _create_account(
         client,
+        token,
         user["id"],
         "Bank Account",
         "15000",
     )
     _create_account(
         client,
+        token,
         user["id"],
         "Cash",
         "2500.50",
     )
 
-    response = client.get(f"/api/financial-summary/{user['id']}")
+    response = client.get(
+        f"/api/financial-summary/{user['id']}", headers=_headers(token)
+    )
 
     assert response.status_code == 200
 
@@ -144,17 +168,20 @@ def test_summary_includes_multiple_accounts(
 def test_transfer_transactions_are_not_income_or_expense(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"], "Main Bank", "10000")
+    user, token = _auth(client)
+    account = _create_account(client, token, user["id"], "Main Bank", "10000")
 
     _create_transaction(
         client,
+        token,
         account["id"],
         "2000",
         "transfer",
     )
 
-    response = client.get(f"/api/financial-summary/{user['id']}")
+    response = client.get(
+        f"/api/financial-summary/{user['id']}", headers=_headers(token)
+    )
 
     assert response.status_code == 200
 
@@ -171,17 +198,20 @@ def test_transfer_transactions_are_not_income_or_expense(
 def test_summary_handles_income_only(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"], "Main Bank", "0")
+    user, token = _auth(client)
+    account = _create_account(client, token, user["id"], "Main Bank", "0")
 
     _create_transaction(
         client,
+        token,
         account["id"],
         "25000",
         "income",
     )
 
-    response = client.get(f"/api/financial-summary/{user['id']}")
+    response = client.get(
+        f"/api/financial-summary/{user['id']}", headers=_headers(token)
+    )
 
     assert response.status_code == 200
 
@@ -195,17 +225,20 @@ def test_summary_handles_income_only(
 def test_summary_handles_expense_only(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"], "Main Bank", "5000")
+    user, token = _auth(client)
+    account = _create_account(client, token, user["id"], "Main Bank", "5000")
 
     _create_transaction(
         client,
+        token,
         account["id"],
         "1750",
         "expense",
     )
 
-    response = client.get(f"/api/financial-summary/{user['id']}")
+    response = client.get(
+        f"/api/financial-summary/{user['id']}", headers=_headers(token)
+    )
 
     assert response.status_code == 200
 
@@ -223,27 +256,37 @@ def test_invalid_user_id_returns_404(client: FlaskClient) -> None:
 
 
 def test_nonexistent_user_returns_404(client: FlaskClient) -> None:
-    response = client.get(f"/api/financial-summary/{uuid.uuid4()}")
+    user, token = _auth(client)
+    deleted = client.delete(f"/api/users/{user['id']}", headers=_headers(token))
+    assert deleted.status_code == 204
+
+    response = client.get(
+        f"/api/financial-summary/{user['id']}", headers=_headers(token)
+    )
 
     assert response.status_code == 404
     assert response.get_json()["error"] == "user not found"
 
 
 def test_summary_is_isolated_by_user(client: FlaskClient) -> None:
-    user_a = _create_user(client, email="user-a@example.com")
-    user_b = _create_user(client, email="user-b@example.com")
+    user_a, token_a = _auth(client, email="user-a@example.com")
+    user_b, token_b = _auth(client, email="user-b@example.com")
 
-    account_a = _create_account(client, user_a["id"], "A Bank", "10000")
-    account_b = _create_account(client, user_b["id"], "B Bank", "90000")
+    account_a = _create_account(client, token_a, user_a["id"], "A Bank", "10000")
+    account_b = _create_account(client, token_b, user_b["id"], "B Bank", "90000")
 
-    _create_transaction(client, account_a["id"], "3000", "income")
-    _create_transaction(client, account_a["id"], "500", "expense")
+    _create_transaction(client, token_a, account_a["id"], "3000", "income")
+    _create_transaction(client, token_a, account_a["id"], "500", "expense")
 
-    _create_transaction(client, account_b["id"], "50000", "income")
-    _create_transaction(client, account_b["id"], "20000", "expense")
+    _create_transaction(client, token_b, account_b["id"], "50000", "income")
+    _create_transaction(client, token_b, account_b["id"], "20000", "expense")
 
-    summary_a = client.get(f"/api/financial-summary/{user_a['id']}")
-    summary_b = client.get(f"/api/financial-summary/{user_b['id']}")
+    summary_a = client.get(
+        f"/api/financial-summary/{user_a['id']}", headers=_headers(token_a)
+    )
+    summary_b = client.get(
+        f"/api/financial-summary/{user_b['id']}", headers=_headers(token_b)
+    )
 
     assert summary_a.status_code == 200
     assert summary_b.status_code == 200

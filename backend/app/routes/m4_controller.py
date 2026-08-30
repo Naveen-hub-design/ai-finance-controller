@@ -20,11 +20,13 @@ questions, or AI answers are logged.
 import uuid
 
 from flask import Blueprint, current_app, request
+from flask_jwt_extended import jwt_required
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..extensions import db
 from ..models import User
 from ..services.m4.controller import build_controller_report
+from ._ownership import require_owner_or
 
 
 m4_controller_bp = Blueprint(
@@ -49,7 +51,12 @@ def _intent_from_payload(payload):
 
 
 @m4_controller_bp.post("/<uuid:user_id>/ai-controller")
+@jwt_required()
 def post_ai_controller(user_id: uuid.UUID):
+    forbidden = require_owner_or(user_id)
+    if forbidden is not None:
+        return forbidden
+
     payload = request.get_json(silent=True)
 
     if not isinstance(payload, dict):

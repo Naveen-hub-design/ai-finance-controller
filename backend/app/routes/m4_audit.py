@@ -12,10 +12,12 @@ are never logged.
 import uuid
 
 from flask import Blueprint, current_app, request
+from flask_jwt_extended import jwt_required
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..extensions import db
 from ..models import AuditRecord, User
+from ._ownership import require_owner_or
 
 # The only explicitly allowed audit kinds. Rejects arbitrary/bounded kinds.
 VALID_AUDIT_KINDS = {"risk", "recommendation", "decision"}
@@ -46,7 +48,12 @@ def _lookup_user(user_id: uuid.UUID):
 
 
 @m4_audit_bp.post("/<uuid:user_id>/audit-record")
+@jwt_required()
 def create_audit_record(user_id: uuid.UUID):
+    forbidden = require_owner_or(user_id)
+    if forbidden is not None:
+        return forbidden
+
     payload = request.get_json(silent=True)
 
     if not isinstance(payload, dict):
@@ -86,7 +93,12 @@ def create_audit_record(user_id: uuid.UUID):
 
 
 @m4_audit_bp.get("/<uuid:user_id>/audit")
+@jwt_required()
 def list_audit_records(user_id: uuid.UUID):
+    forbidden = require_owner_or(user_id)
+    if forbidden is not None:
+        return forbidden
+
     _, error = _lookup_user(user_id)
     if error is not None:
         return error

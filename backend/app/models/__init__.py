@@ -5,6 +5,7 @@ from .transaction import Transaction
 from .budget import Budget
 from .financial_goal import FinancialGoal
 from .m4_audit import AuditRecord
+from .controller_task import ControllerTask
 
 __all__ = [
     "User",
@@ -14,4 +15,5 @@ __all__ = [
     "Budget",
     "FinancialGoal",
     "AuditRecord",
+    "ControllerTask",
 ]

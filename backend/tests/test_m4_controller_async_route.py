@@ -5,10 +5,10 @@ worker, or the OpenAI provider. The Celery producer (``send_task`` /
 ``AsyncResult``) and the database are mocked at the appropriate boundaries so
 every scenario runs in isolation against the in-memory SQLite test app.
 
-TODO (M7): security. These routes (like the rest of the API) are
-unauthenticated. The next security milestone must bind a dispatched Celery
-task to its owning authenticated user so callers can only observe their own
-results.
+M7.5: async routes are authenticated (M7.4) and each dispatched task is bound
+to its authenticated owner (``ControllerTask``). Status reads require the task
+id to be owned by the caller, so these tests seed the ownership mapping where
+a status read is exercised.
 """
 
 import os
@@ -19,6 +19,8 @@ from flask.testing import FlaskClient
 
 from app import celery_client
 from app.celery_client import dispatch_ai_controller
+from app.extensions import db
+from app.models import ControllerTask
 
 
 def _create_user(
@@ -27,10 +29,46 @@ def _create_user(
 ) -> dict:
     response = client.post(
         "/api/users",
-        json={"email": email, "name": "Controller Async Route User"},
+        json={
+            "email": email,
+            "name": "Controller Async Route User",
+            "password": "test-password-123",
+        },
     )
     assert response.status_code == 201, response.get_json()
-    return response.get_json()
+    user = response.get_json()
+    user["_token"] = _token_for(client, user["id"])
+    return user
+
+
+def _token_for(client: FlaskClient, identity) -> str:
+    from flask_jwt_extended import create_access_token
+
+    with client.application.app_context():
+        return create_access_token(identity=str(identity))
+
+
+def _headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _seed_owned_task(client: FlaskClient, user_id: str, task_id: str) -> None:
+    """Bind ``task_id`` to ``user_id`` in the ownership mapping."""
+    with client.application.app_context():
+        db.session.add(
+            ControllerTask(
+                task_id=uuid.UUID(task_id),
+                user_id=uuid.UUID(user_id),
+            )
+        )
+        db.session.commit()
+
+
+def _owned_task(client: FlaskClient, task_id: str) -> ControllerTask | None:
+    with client.application.app_context():
+        return db.session.query(ControllerTask).filter_by(
+            task_id=uuid.UUID(task_id)
+        ).first()
 
 
 def _sample_success_result(user_id: str) -> dict:
@@ -81,12 +119,18 @@ def test_submission_returns_created(client: FlaskClient) -> None:
         response = client.post(
             f"/api/users/{user['id']}/ai-controller/async",
             json={"intent": "Why did expenses rise?"},
+            headers=_headers(user["_token"]),
         )
 
     assert response.status_code == 201
     data = response.get_json()
     assert data["task_id"] == task_id
     assert data["status"] == "PENDING"
+
+    owned = _owned_task(client, task_id)
+    assert owned is not None
+    assert str(owned.task_id) == task_id
+    assert str(owned.user_id) == user["id"]
 
 
 def test_submission_returns_a_task_id(client: FlaskClient) -> None:
@@ -101,6 +145,7 @@ def test_submission_returns_a_task_id(client: FlaskClient) -> None:
         response = client.post(
             f"/api/users/{user['id']}/ai-controller/async",
             json={"intent": "Question?"},
+            headers=_headers(user["_token"]),
         )
 
     data = response.get_json()
@@ -118,6 +163,7 @@ def test_submission_returns_pending_status(client: FlaskClient) -> None:
         response = client.post(
             f"/api/users/{user['id']}/ai-controller/async",
             json={"intent": "Question?"},
+            headers=_headers(user["_token"]),
         )
 
     assert response.get_json()["status"] == "PENDING"
@@ -133,11 +179,35 @@ def test_dispatch_receives_user_id_and_intent(client: FlaskClient) -> None:
         client.post(
             f"/api/users/{user['id']}/ai-controller/async",
             json={"intent": "My exact question"},
+            headers=_headers(user["_token"]),
         )
 
     args, _ = mock_dispatch.call_args
     assert str(args[0]) == user["id"]
     assert args[1] == "My exact question"
+
+
+def test_ownership_record_created_after_dispatch(client: FlaskClient) -> None:
+    user = _create_user(client)
+    task_id = str(uuid.uuid4())
+
+    with patch(
+        "app.routes.m4_controller_async.dispatch_ai_controller",
+        return_value=_TaskResult("PENDING"),
+    ) as mock_dispatch:
+        mock_dispatch.return_value.id = task_id
+        response = client.post(
+            f"/api/users/{user['id']}/ai-controller/async",
+            json={"intent": "Save more"},
+            headers=_headers(user["_token"]),
+        )
+
+    assert response.status_code == 201
+    owned = _owned_task(client, task_id)
+    assert owned is not None
+    # The recorded owner is the authenticated JWT identity, which for an
+    # owner request equals the URL user_id.
+    assert str(owned.user_id) == str(uuid.UUID(user["id"]))
 
 
 # ---------------------------------------------------------------------------
@@ -146,66 +216,80 @@ def test_dispatch_receives_user_id_and_intent(client: FlaskClient) -> None:
 
 
 def test_submission_missing_json_body_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     with patch("app.routes.m4_controller_async.dispatch_ai_controller"):
         response = client.post(
-            f"/api/users/{uuid.uuid4()}/ai-controller/async",
+            f"/api/users/{rid}/ai-controller/async",
             data="",
             content_type="application/json",
+            headers=_headers(_token_for(client, rid)),
         )
     assert response.status_code == 400
 
 
 def test_submission_invalid_json_body_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     with patch("app.routes.m4_controller_async.dispatch_ai_controller"):
         response = client.post(
-            f"/api/users/{uuid.uuid4()}/ai-controller/async",
+            f"/api/users/{rid}/ai-controller/async",
             data="not json",
             content_type="application/json",
+            headers=_headers(_token_for(client, rid)),
         )
     assert response.status_code == 400
 
 
 def test_submission_missing_intent_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     with patch("app.routes.m4_controller_async.dispatch_ai_controller"):
         response = client.post(
-            f"/api/users/{uuid.uuid4()}/ai-controller/async",
+            f"/api/users/{rid}/ai-controller/async",
             json={},
+            headers=_headers(_token_for(client, rid)),
         )
     assert response.status_code == 400
 
 
 def test_submission_null_intent_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     with patch("app.routes.m4_controller_async.dispatch_ai_controller"):
         response = client.post(
-            f"/api/users/{uuid.uuid4()}/ai-controller/async",
+            f"/api/users/{rid}/ai-controller/async",
             json={"intent": None},
+            headers=_headers(_token_for(client, rid)),
         )
     assert response.status_code == 400
 
 
 def test_submission_non_string_intent_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     with patch("app.routes.m4_controller_async.dispatch_ai_controller"):
         response = client.post(
-            f"/api/users/{uuid.uuid4()}/ai-controller/async",
+            f"/api/users/{rid}/ai-controller/async",
             json={"intent": 123},
+            headers=_headers(_token_for(client, rid)),
         )
     assert response.status_code == 400
 
 
 def test_submission_empty_intent_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     with patch("app.routes.m4_controller_async.dispatch_ai_controller"):
         response = client.post(
-            f"/api/users/{uuid.uuid4()}/ai-controller/async",
+            f"/api/users/{rid}/ai-controller/async",
             json={"intent": ""},
+            headers=_headers(_token_for(client, rid)),
         )
     assert response.status_code == 400
 
 
 def test_submission_whitespace_intent_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     with patch("app.routes.m4_controller_async.dispatch_ai_controller"):
         response = client.post(
-            f"/api/users/{uuid.uuid4()}/ai-controller/async",
+            f"/api/users/{rid}/ai-controller/async",
             json={"intent": "   "},
+            headers=_headers(_token_for(client, rid)),
         )
     assert response.status_code == 400
 
@@ -216,10 +300,12 @@ def test_submission_whitespace_intent_returns_400(client: FlaskClient) -> None:
 
 
 def test_submission_unknown_user_returns_404(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     with patch("app.routes.m4_controller_async.dispatch_ai_controller"):
         response = client.post(
-            f"/api/users/{uuid.uuid4()}/ai-controller/async",
+            f"/api/users/{rid}/ai-controller/async",
             json={"intent": "Question?"},
+            headers=_headers(_token_for(client, rid)),
         )
     assert response.status_code == 404
     assert response.get_json()["error"] == "user not found"
@@ -228,14 +314,16 @@ def test_submission_unknown_user_returns_404(client: FlaskClient) -> None:
 def test_submission_user_lookup_error_returns_500(client: FlaskClient) -> None:
     from sqlalchemy.exc import SQLAlchemyError
 
+    rid = uuid.uuid4()
     with patch(
         "app.routes.m4_controller_async.db.session.get",
         side_effect=SQLAlchemyError("boom"),
     ):
         with patch("app.routes.m4_controller_async.dispatch_ai_controller"):
             response = client.post(
-                f"/api/users/{uuid.uuid4()}/ai-controller/async",
+                f"/api/users/{rid}/ai-controller/async",
                 json={"intent": "Question?"},
+                headers=_headers(_token_for(client, rid)),
             )
 
     assert response.status_code == 500
@@ -250,11 +338,13 @@ def test_submission_user_lookup_error_returns_500(client: FlaskClient) -> None:
 def test_status_pending_returns_200(client: FlaskClient) -> None:
     user = _create_user(client)
     task_id = str(uuid.uuid4())
+    _seed_owned_task(client, user["id"], task_id)
     fake = _TaskResult("PENDING")
 
     with patch("app.routes.m4_controller_async.task_result", return_value=fake):
         response = client.get(
-            f"/api/users/{user['id']}/ai-controller/async/{task_id}"
+            f"/api/users/{user['id']}/ai-controller/async/{task_id}",
+            headers=_headers(user["_token"]),
         )
 
     assert response.status_code == 200
@@ -266,11 +356,13 @@ def test_status_pending_returns_200(client: FlaskClient) -> None:
 def test_status_retry_returns_200(client: FlaskClient) -> None:
     user = _create_user(client)
     task_id = str(uuid.uuid4())
+    _seed_owned_task(client, user["id"], task_id)
     fake = _TaskResult("RETRY")
 
     with patch("app.routes.m4_controller_async.task_result", return_value=fake):
         response = client.get(
-            f"/api/users/{user['id']}/ai-controller/async/{task_id}"
+            f"/api/users/{user['id']}/ai-controller/async/{task_id}",
+            headers=_headers(user["_token"]),
         )
 
     assert response.status_code == 200
@@ -282,12 +374,14 @@ def test_status_retry_returns_200(client: FlaskClient) -> None:
 def test_status_success_returns_result(client: FlaskClient) -> None:
     user = _create_user(client)
     task_id = str(uuid.uuid4())
+    _seed_owned_task(client, user["id"], task_id)
     payload = _sample_success_result(user["id"])
     fake = _TaskResult("SUCCESS", result=payload)
 
     with patch("app.routes.m4_controller_async.task_result", return_value=fake):
         response = client.get(
-            f"/api/users/{user['id']}/ai-controller/async/{task_id}"
+            f"/api/users/{user['id']}/ai-controller/async/{task_id}",
+            headers=_headers(user["_token"]),
         )
 
     assert response.status_code == 200
@@ -299,11 +393,13 @@ def test_status_success_returns_result(client: FlaskClient) -> None:
 def test_status_failure_returns_safe_message(client: FlaskClient) -> None:
     user = _create_user(client)
     task_id = str(uuid.uuid4())
+    _seed_owned_task(client, user["id"], task_id)
     fake = _TaskResult("FAILURE", result=RuntimeError("super secret traceback"))
 
     with patch("app.routes.m4_controller_async.task_result", return_value=fake):
         response = client.get(
-            f"/api/users/{user['id']}/ai-controller/async/{task_id}"
+            f"/api/users/{user['id']}/ai-controller/async/{task_id}",
+            headers=_headers(user["_token"]),
         )
 
     assert response.status_code == 200
@@ -325,11 +421,13 @@ def test_status_failure_returns_safe_message(client: FlaskClient) -> None:
 def test_result_not_retrieved_for_pending(client: FlaskClient) -> None:
     user = _create_user(client)
     task_id = str(uuid.uuid4())
+    _seed_owned_task(client, user["id"], task_id)
     fake = _TaskResult("PENDING", result={"leak": True})
 
     with patch("app.routes.m4_controller_async.task_result", return_value=fake):
         response = client.get(
-            f"/api/users/{user['id']}/ai-controller/async/{task_id}"
+            f"/api/users/{user['id']}/ai-controller/async/{task_id}",
+            headers=_headers(user["_token"]),
         )
 
     assert response.get_json()["status"] == "PENDING"
@@ -340,11 +438,13 @@ def test_result_not_retrieved_for_pending(client: FlaskClient) -> None:
 def test_result_not_retrieved_for_retry(client: FlaskClient) -> None:
     user = _create_user(client)
     task_id = str(uuid.uuid4())
+    _seed_owned_task(client, user["id"], task_id)
     fake = _TaskResult("RETRY", result={"leak": True})
 
     with patch("app.routes.m4_controller_async.task_result", return_value=fake):
         response = client.get(
-            f"/api/users/{user['id']}/ai-controller/async/{task_id}"
+            f"/api/users/{user['id']}/ai-controller/async/{task_id}",
+            headers=_headers(user["_token"]),
         )
 
     assert response.get_json()["status"] == "RETRY"
@@ -355,12 +455,14 @@ def test_result_not_retrieved_for_retry(client: FlaskClient) -> None:
 def test_result_retrieved_only_for_success(client: FlaskClient) -> None:
     user = _create_user(client)
     task_id = str(uuid.uuid4())
+    _seed_owned_task(client, user["id"], task_id)
     payload = _sample_success_result(user["id"])
     fake = _TaskResult("SUCCESS", result=payload)
 
     with patch("app.routes.m4_controller_async.task_result", return_value=fake):
         response = client.get(
-            f"/api/users/{user['id']}/ai-controller/async/{task_id}"
+            f"/api/users/{user['id']}/ai-controller/async/{task_id}",
+            headers=_headers(user["_token"]),
         )
 
     assert fake.result_accessed is True

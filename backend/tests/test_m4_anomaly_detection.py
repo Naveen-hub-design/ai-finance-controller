@@ -9,17 +9,30 @@ from flask.testing import FlaskClient
 from app.services.m4.anomaly_detection import run_risk_intelligence
 
 
-def _create_user(client: FlaskClient, email: str = "risk@example.com") -> dict:
-    response = client.post(
+def _create_user(
+    client: FlaskClient, email: str = "risk@example.com"
+) -> tuple[dict, str]:
+    created = client.post(
         "/api/users",
-        json={"email": email, "name": "Risk User"},
+        json={"email": email, "name": "Risk User", "password": "test-password-123"},
     )
-    assert response.status_code == 201, response.get_json()
-    return response.get_json()
+    assert created.status_code == 201, created.get_json()
+    login = client.post(
+        "/api/users/login",
+        json={"email": email, "password": "test-password-123"},
+    )
+    assert login.status_code == 200, login.get_json()
+    body = login.get_json()
+    return body["user"], body["access_token"]
+
+
+def _headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _create_account(
     client: FlaskClient,
+    token: str,
     user_id: str,
     name: str = "Bank",
     balance: str = "100000",
@@ -33,6 +46,7 @@ def _create_account(
             "currency": "INR",
             "current_balance": balance,
         },
+        headers=_headers(token),
     )
     assert response.status_code == 201, response.get_json()
     return response.get_json()
@@ -40,6 +54,7 @@ def _create_account(
 
 def _create_category(
     client: FlaskClient,
+    token: str,
     user_id: str,
     name: str,
 ) -> dict:
@@ -50,6 +65,7 @@ def _create_category(
             "name": name,
             "category_type": "expense",
         },
+        headers=_headers(token),
     )
     assert response.status_code == 201, response.get_json()
     return response.get_json()
@@ -57,6 +73,7 @@ def _create_category(
 
 def _create_expense(
     client: FlaskClient,
+    token: str,
     account_id: str,
     amount: str,
     date: str,
@@ -74,13 +91,16 @@ def _create_expense(
     if category_id is not None:
         payload["category_id"] = category_id
 
-    response = client.post("/api/transactions", json=payload)
+    response = client.post(
+        "/api/transactions", json=payload, headers=_headers(token)
+    )
     assert response.status_code == 201, response.get_json()
     return response.get_json()
 
 
 def _create_income(
     client: FlaskClient,
+    token: str,
     account_id: str,
     amount: str,
     date: str,
@@ -93,6 +113,7 @@ def _create_income(
             "transaction_type": "income",
             "transaction_date": date,
         },
+        headers=_headers(token),
     )
     assert response.status_code == 201, response.get_json()
     return response.get_json()
@@ -103,8 +124,8 @@ def _types(findings: list[dict]) -> list[str]:
 
 
 def test_no_transactions_returns_empty(client: FlaskClient) -> None:
-    user = _create_user(client)
-    _create_account(client, user["id"])
+    user, token = _create_user(client)
+    _create_account(client, token, user["id"])
 
     findings = run_risk_intelligence(user["id"])
 
@@ -112,15 +133,15 @@ def test_no_transactions_returns_empty(client: FlaskClient) -> None:
 
 
 def test_large_amount_detection(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
     # 3 normal expenses -> outlier is compared against the overall average
-    _create_expense(client, account["id"], "100", "2026-08-01")
-    _create_expense(client, account["id"], "200", "2026-08-02")
-    _create_expense(client, account["id"], "300", "2026-08-03")
+    _create_expense(client, token, account["id"], "100", "2026-08-01")
+    _create_expense(client, token, account["id"], "200", "2026-08-02")
+    _create_expense(client, token, account["id"], "300", "2026-08-03")
     # Large outlier: overall avg=(100+200+300+2000)/4=650, threshold=1950
-    large = _create_expense(client, account["id"], "2000", "2026-08-04")
+    large = _create_expense(client, token, account["id"], "2000", "2026-08-04")
 
     findings = run_risk_intelligence(user["id"])
     types = _types(findings)
@@ -135,26 +156,26 @@ def test_large_amount_detection(client: FlaskClient) -> None:
 
 
 def test_insufficient_history_no_large_amount(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
     # Only 2 expense transactions -> not enough history (need >= 3)
-    _create_expense(client, account["id"], "100", "2026-08-01")
-    _create_expense(client, account["id"], "1000", "2026-08-02")
+    _create_expense(client, token, account["id"], "100", "2026-08-01")
+    _create_expense(client, token, account["id"], "1000", "2026-08-02")
 
     types = _types(run_risk_intelligence(user["id"]))
     assert "LARGE_AMOUNT" not in types
 
 
 def test_duplicate_candidate_detection(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
     t1 = _create_expense(
-        client, account["id"], "250", "2026-08-10", "Groceries"
+        client, token, account["id"], "250", "2026-08-10", "Groceries"
     )
     t2 = _create_expense(
-        client, account["id"], "250", "2026-08-10", "groceries"
+        client, token, account["id"], "250", "2026-08-10", "groceries"
     )
 
     findings = run_risk_intelligence(user["id"])
@@ -167,12 +188,12 @@ def test_duplicate_candidate_detection(client: FlaskClient) -> None:
 
 
 def test_different_account_prevents_duplicate(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account_a = _create_account(client, user["id"], "Bank A")
-    account_b = _create_account(client, user["id"], "Bank B")
+    user, token = _create_user(client)
+    account_a = _create_account(client, token, user["id"], "Bank A")
+    account_b = _create_account(client, token, user["id"], "Bank B")
 
-    _create_expense(client, account_a["id"], "250", "2026-08-10", "Rent")
-    _create_expense(client, account_b["id"], "250", "2026-08-10", "Rent")
+    _create_expense(client, token, account_a["id"], "250", "2026-08-10", "Rent")
+    _create_expense(client, token, account_b["id"], "250", "2026-08-10", "Rent")
 
     assert "DUPLICATE_CANDIDATE" not in _types(
         run_risk_intelligence(user["id"])
@@ -180,11 +201,11 @@ def test_different_account_prevents_duplicate(client: FlaskClient) -> None:
 
 
 def test_different_date_prevents_duplicate(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
-    _create_expense(client, account["id"], "250", "2026-08-10", "Coffee")
-    _create_expense(client, account["id"], "250", "2026-08-11", "Coffee")
+    _create_expense(client, token, account["id"], "250", "2026-08-10", "Coffee")
+    _create_expense(client, token, account["id"], "250", "2026-08-11", "Coffee")
 
     assert "DUPLICATE_CANDIDATE" not in _types(
         run_risk_intelligence(user["id"])
@@ -192,11 +213,11 @@ def test_different_date_prevents_duplicate(client: FlaskClient) -> None:
 
 
 def test_different_description_prevents_duplicate(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
-    _create_expense(client, account["id"], "250", "2026-08-10", "Coffee")
-    _create_expense(client, account["id"], "250", "2026-08-10", "Lunch")
+    _create_expense(client, token, account["id"], "250", "2026-08-10", "Coffee")
+    _create_expense(client, token, account["id"], "250", "2026-08-10", "Lunch")
 
     assert "DUPLICATE_CANDIDATE" not in _types(
         run_risk_intelligence(user["id"])
@@ -204,10 +225,10 @@ def test_different_description_prevents_duplicate(client: FlaskClient) -> None:
 
 
 def test_round_amount_signal(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
-    _create_expense(client, account["id"], "5000", "2026-08-01")
+    _create_expense(client, token, account["id"], "5000", "2026-08-01")
 
     findings = run_risk_intelligence(user["id"])
     types = _types(findings)
@@ -218,10 +239,10 @@ def test_round_amount_signal(client: FlaskClient) -> None:
 
 
 def test_non_round_amount_no_round_signal(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
-    _create_expense(client, account["id"], "473.19", "2026-08-01")
+    _create_expense(client, token, account["id"], "473.19", "2026-08-01")
 
     assert "ROUND_AMOUNT" not in _types(
         run_risk_intelligence(user["id"])
@@ -229,12 +250,12 @@ def test_non_round_amount_no_round_signal(client: FlaskClient) -> None:
 
 
 def test_rapid_frequency_detection(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
-    _create_expense(client, account["id"], "100", "2026-08-20")
-    _create_expense(client, account["id"], "150", "2026-08-20")
-    _create_expense(client, account["id"], "200", "2026-08-20")
+    _create_expense(client, token, account["id"], "100", "2026-08-20")
+    _create_expense(client, token, account["id"], "150", "2026-08-20")
+    _create_expense(client, token, account["id"], "200", "2026-08-20")
 
     findings = run_risk_intelligence(user["id"])
     types = _types(findings)
@@ -246,11 +267,11 @@ def test_rapid_frequency_detection(client: FlaskClient) -> None:
 
 
 def test_fewer_than_three_same_day_no_rapid(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
-    _create_expense(client, account["id"], "100", "2026-08-20")
-    _create_expense(client, account["id"], "150", "2026-08-20")
+    _create_expense(client, token, account["id"], "100", "2026-08-20")
+    _create_expense(client, token, account["id"], "150", "2026-08-20")
 
     assert "RAPID_FREQUENCY" not in _types(
         run_risk_intelligence(user["id"])
@@ -258,15 +279,15 @@ def test_fewer_than_three_same_day_no_rapid(client: FlaskClient) -> None:
 
 
 def test_category_concentration(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
-    groceries = _create_category(client, user["id"], "Groceries")
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
+    groceries = _create_category(client, token, user["id"], "Groceries")
 
     # groceries 60 + dining 40 -> groceries share = 60% >= 50%
     _create_expense(
-        client, account["id"], "60", "2026-08-01", "Food", groceries["id"]
+        client, token, account["id"], "60", "2026-08-01", "Food", groceries["id"]
     )
-    _create_expense(client, account["id"], "40", "2026-08-02", "Restaurant")
+    _create_expense(client, token, account["id"], "40", "2026-08-02", "Restaurant")
 
     findings = run_risk_intelligence(user["id"])
     types = _types(findings)
@@ -278,12 +299,12 @@ def test_category_concentration(client: FlaskClient) -> None:
 
 
 def test_category_concentration_ignores_null_category(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
     # All expenses have NULL category -> signal must be ignored.
-    _create_expense(client, account["id"], "60", "2026-08-01", "Food")
-    _create_expense(client, account["id"], "60", "2026-08-02", "Other")
+    _create_expense(client, token, account["id"], "60", "2026-08-01", "Food")
+    _create_expense(client, token, account["id"], "60", "2026-08-02", "Other")
 
     assert "CATEGORY_CONCENTRATION" not in _types(
         run_risk_intelligence(user["id"])
@@ -291,15 +312,15 @@ def test_category_concentration_ignores_null_category(client: FlaskClient) -> No
 
 
 def test_user_isolation(client: FlaskClient) -> None:
-    user_one = _create_user(client, "iso-a@example.com")
-    user_two = _create_user(client, "iso-b@example.com")
+    user_one, token_one = _create_user(client, "iso-a@example.com")
+    user_two, token_two = _create_user(client, "iso-b@example.com")
 
-    account_one = _create_account(client, user_one["id"], "A Bank")
-    account_two = _create_account(client, user_two["id"], "B Bank")
+    account_one = _create_account(client, token_one, user_one["id"], "A Bank")
+    account_two = _create_account(client, token_two, user_two["id"], "B Bank")
 
     # user_two has a large, round, duplicated expense pattern.
-    _create_expense(client, account_two["id"], "90000", "2026-08-01", "Big")
-    _create_expense(client, account_two["id"], "90000", "2026-08-01", "big")
+    _create_expense(client, token_two, account_two["id"], "90000", "2026-08-01", "Big")
+    _create_expense(client, token_two, account_two["id"], "90000", "2026-08-01", "big")
 
     findings_one = run_risk_intelligence(user_one["id"])
     findings_two = run_risk_intelligence(user_two["id"])
@@ -315,14 +336,14 @@ def test_user_isolation(client: FlaskClient) -> None:
 
 
 def test_all_monetary_outputs_are_strings(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
-    _create_expense(client, account["id"], "100", "2026-08-01")
-    _create_expense(client, account["id"], "200", "2026-08-02")
-    _create_expense(client, account["id"], "300", "2026-08-03")
-    _create_expense(client, account["id"], "900", "2026-08-04")
-    _create_expense(client, account["id"], "5000", "2026-08-05")
+    _create_expense(client, token, account["id"], "100", "2026-08-01")
+    _create_expense(client, token, account["id"], "200", "2026-08-02")
+    _create_expense(client, token, account["id"], "300", "2026-08-03")
+    _create_expense(client, token, account["id"], "900", "2026-08-04")
+    _create_expense(client, token, account["id"], "5000", "2026-08-05")
 
     findings = run_risk_intelligence(user["id"])
 
@@ -336,13 +357,13 @@ def test_all_monetary_outputs_are_strings(client: FlaskClient) -> None:
 
 
 def test_no_floats_produced(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
-    _create_expense(client, account["id"], "100", "2026-08-01")
-    _create_expense(client, account["id"], "200", "2026-08-02")
-    _create_expense(client, account["id"], "300", "2026-08-03")
-    _create_expense(client, account["id"], "5000", "2026-08-04")
+    _create_expense(client, token, account["id"], "100", "2026-08-01")
+    _create_expense(client, token, account["id"], "200", "2026-08-02")
+    _create_expense(client, token, account["id"], "300", "2026-08-03")
+    _create_expense(client, token, account["id"], "5000", "2026-08-04")
 
     findings = run_risk_intelligence(user["id"])
 
@@ -353,17 +374,17 @@ def test_no_floats_produced(client: FlaskClient) -> None:
 
 
 def test_deterministic_ordering(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, token, user["id"])
 
     # Produce LARGE_AMOUNT (high), DUPLICATE_CANDIDATE (medium),
     # ROUND_AMOUNT (low) findings.
-    _create_expense(client, account["id"], "100", "2026-08-01")
-    _create_expense(client, account["id"], "200", "2026-08-02")
-    _create_expense(client, account["id"], "300", "2026-08-03")
-    _create_expense(client, account["id"], "900", "2026-08-04")
-    _create_expense(client, account["id"], "333", "2026-08-05", "Rent")
-    _create_expense(client, account["id"], "333", "2026-08-05", "rent")
+    _create_expense(client, token, account["id"], "100", "2026-08-01")
+    _create_expense(client, token, account["id"], "200", "2026-08-02")
+    _create_expense(client, token, account["id"], "300", "2026-08-03")
+    _create_expense(client, token, account["id"], "900", "2026-08-04")
+    _create_expense(client, token, account["id"], "333", "2026-08-05", "Rent")
+    _create_expense(client, token, account["id"], "333", "2026-08-05", "rent")
 
     results_a = run_risk_intelligence(user["id"])
     results_b = run_risk_intelligence(user["id"])

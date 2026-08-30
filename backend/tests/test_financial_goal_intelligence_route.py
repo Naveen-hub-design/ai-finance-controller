@@ -1,6 +1,5 @@
 """Tests for the M3.6 financial goal intelligence API endpoint."""
 
-import uuid
 from unittest.mock import patch
 
 import pytest
@@ -9,13 +8,27 @@ from flask.testing import FlaskClient
 from app.services.openai_provider import AIConfigurationError, AIProviderError
 
 
-def _create_user(client: FlaskClient, email: str = "goal@example.com") -> dict:
-    response = client.post(
+def _auth(
+    client: FlaskClient,
+    email: str = "goal@example.com",
+    password: str = "test-password-123",
+) -> tuple[dict, str]:
+    created = client.post(
         "/api/users",
-        json={"email": email, "name": "Goal User"},
+        json={"email": email, "full_name": "Goal User", "password": password},
     )
-    assert response.status_code == 201, response.get_json()
-    return response.get_json()
+    assert created.status_code == 201, created.get_json()
+    login = client.post(
+        "/api/users/login",
+        json={"email": email, "password": password},
+    )
+    assert login.status_code == 200, login.get_json()
+    body = login.get_json()
+    return body["user"], body["access_token"]
+
+
+def _headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _patch_service(return_value="AI answer"):
@@ -26,12 +39,13 @@ def _patch_service(return_value="AI answer"):
 
 
 def test_successful_request_returns_200(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     with _patch_service(return_value="The goal answer."):
         response = client.post(
             f"/api/users/{user['id']}/financial-goal-intelligence",
             json={"question": "Can I reach my goal?"},
+            headers=_headers(token),
         )
 
     assert response.status_code == 200
@@ -39,12 +53,13 @@ def test_successful_request_returns_200(client: FlaskClient) -> None:
 
 
 def test_response_contains_answer(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     with _patch_service():
         response = client.post(
             f"/api/users/{user['id']}/financial-goal-intelligence",
             json={"question": "Can I reach my goal?"},
+            headers=_headers(token),
         )
 
     body = response.get_json()
@@ -52,24 +67,26 @@ def test_response_contains_answer(client: FlaskClient) -> None:
 
 
 def test_missing_json_body_returns_400(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     response = client.post(
         f"/api/users/{user['id']}/financial-goal-intelligence",
         data=None,
         content_type="application/json",
+        headers=_headers(token),
     )
 
     assert response.status_code == 400
 
 
 def test_invalid_json_returns_400(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     response = client.post(
         f"/api/users/{user['id']}/financial-goal-intelligence",
         data="{not valid json",
         content_type="application/json",
+        headers=_headers(token),
     )
 
     assert response.status_code == 400
@@ -77,11 +94,12 @@ def test_invalid_json_returns_400(client: FlaskClient) -> None:
 
 
 def test_missing_question_returns_400(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     response = client.post(
         f"/api/users/{user['id']}/financial-goal-intelligence",
         json={},
+        headers=_headers(token),
     )
 
     assert response.status_code == 400
@@ -89,11 +107,12 @@ def test_missing_question_returns_400(client: FlaskClient) -> None:
 
 
 def test_non_string_question_returns_400(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     response = client.post(
         f"/api/users/{user['id']}/financial-goal-intelligence",
         json={"question": 12345},
+        headers=_headers(token),
     )
 
     assert response.status_code == 400
@@ -101,20 +120,26 @@ def test_non_string_question_returns_400(client: FlaskClient) -> None:
 
 
 def test_blank_question_returns_400(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     for value in ("", "   "):
         response = client.post(
             f"/api/users/{user['id']}/financial-goal-intelligence",
             json={"question": value},
+            headers=_headers(token),
         )
         assert response.status_code == 400
 
 
 def test_nonexistent_user_returns_404(client: FlaskClient) -> None:
+    user, token = _auth(client)
+    deleted = client.delete(f"/api/users/{user['id']}", headers=_headers(token))
+    assert deleted.status_code == 204
+
     response = client.post(
-        f"/api/users/{uuid.uuid4()}/financial-goal-intelligence",
+        f"/api/users/{user['id']}/financial-goal-intelligence",
         json={"question": "Can I reach my goal?"},
+        headers=_headers(token),
     )
 
     assert response.status_code == 404
@@ -122,12 +147,13 @@ def test_nonexistent_user_returns_404(client: FlaskClient) -> None:
 
 
 def test_service_receives_correct_user_uuid(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     with _patch_service() as mock_service:
         client.post(
             f"/api/users/{user['id']}/financial-goal-intelligence",
             json={"question": "Can I reach my goal?"},
+            headers=_headers(token),
         )
 
     mock_service.assert_called_once()
@@ -136,12 +162,13 @@ def test_service_receives_correct_user_uuid(client: FlaskClient) -> None:
 
 
 def test_service_receives_stripped_question(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     with _patch_service() as mock_service:
         client.post(
             f"/api/users/{user['id']}/financial-goal-intelligence",
             json={"question": "  What is my goal progress?  "},
+            headers=_headers(token),
         )
 
     args, _ = mock_service.call_args
@@ -149,7 +176,7 @@ def test_service_receives_stripped_question(client: FlaskClient) -> None:
 
 
 def test_configuration_error_returns_503(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     with patch(
         "app.routes.financial_goal_intelligence.build_goal_intelligence",
@@ -158,6 +185,7 @@ def test_configuration_error_returns_503(client: FlaskClient) -> None:
         response = client.post(
             f"/api/users/{user['id']}/financial-goal-intelligence",
             json={"question": "Can I reach my goal?"},
+            headers=_headers(token),
         )
 
     assert response.status_code == 503
@@ -167,7 +195,7 @@ def test_configuration_error_returns_503(client: FlaskClient) -> None:
 
 
 def test_provider_error_returns_502(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     with patch(
         "app.routes.financial_goal_intelligence.build_goal_intelligence",
@@ -176,6 +204,7 @@ def test_provider_error_returns_502(client: FlaskClient) -> None:
         response = client.post(
             f"/api/users/{user['id']}/financial-goal-intelligence",
             json={"question": "Can I reach my goal?"},
+            headers=_headers(token),
         )
 
     assert response.status_code == 502
@@ -185,13 +214,16 @@ def test_provider_error_returns_502(client: FlaskClient) -> None:
 def test_sqlalchemy_lookup_failure_returns_500(client: FlaskClient) -> None:
     from sqlalchemy.exc import SQLAlchemyError
 
+    user, token = _auth(client)
+
     with patch(
         "app.routes.financial_goal_intelligence.db.session.get",
         side_effect=SQLAlchemyError("boom"),
     ):
         response = client.post(
-            f"/api/users/{uuid.uuid4()}/financial-goal-intelligence",
+            f"/api/users/{user['id']}/financial-goal-intelligence",
             json={"question": "Can I reach my goal?"},
+            headers=_headers(token),
         )
 
     assert response.status_code == 500
@@ -201,7 +233,7 @@ def test_sqlalchemy_lookup_failure_returns_500(client: FlaskClient) -> None:
 def test_service_is_mocked_no_real_ai_call(client: FlaskClient) -> None:
     from app.services import openai_provider
 
-    user = _create_user(client)
+    user, token = _auth(client)
 
     with patch.object(
         openai_provider, "send_text_request"
@@ -209,6 +241,7 @@ def test_service_is_mocked_no_real_ai_call(client: FlaskClient) -> None:
         response = client.post(
             f"/api/users/{user['id']}/financial-goal-intelligence",
             json={"question": "Test goal question"},
+            headers=_headers(token),
         )
 
     assert response.status_code == 200

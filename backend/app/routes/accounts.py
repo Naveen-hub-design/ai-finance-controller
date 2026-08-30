@@ -4,11 +4,14 @@ import uuid
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, current_app, request
+from flask_jwt_extended import jwt_required
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from ..auth import get_current_user_id
 from ..extensions import db
 from ..models import Account, User
+from ._ownership import require_owner_or
 from .users import users_bp
 
 accounts_bp = Blueprint("accounts", __name__, url_prefix="/api/accounts")
@@ -37,11 +40,14 @@ def _serialize_account(account: Account) -> dict:
 
 
 @accounts_bp.post("")
+@jwt_required()
 def create_account():
     payload = request.get_json(silent=True)
 
     if not isinstance(payload, dict):
         return {"error": "request body must be valid JSON"}, 400
+
+    current_user_id = get_current_user_id()
 
     user_id_raw = payload.get("user_id")
     name = payload.get("name")
@@ -49,10 +55,16 @@ def create_account():
     currency = payload.get("currency", "INR")
     balance_raw = payload.get("current_balance", "0")
 
-    try:
-        user_id = uuid.UUID(str(user_id_raw))
-    except (ValueError, AttributeError, TypeError):
-        return {"error": "user_id must be a valid UUID"}, 400
+    # The authenticated identity is the authoritative owner. A client-supplied
+    # user_id is never trusted as ownership; a mismatched one is rejected so a
+    # caller cannot create a resource for another user.
+    if user_id_raw is not None:
+        try:
+            supplied_user_id = uuid.UUID(str(user_id_raw))
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "user_id must be a valid UUID"}, 400
+        if supplied_user_id != current_user_id:
+            return {"error": "forbidden"}, 403
 
     if not isinstance(name, str) or not name.strip():
         return {"error": "name is required"}, 400
@@ -76,13 +88,13 @@ def create_account():
         return {"error": "current_balance cannot be negative"}, 400
 
     try:
-        user = db.session.get(User, user_id)
+        user = db.session.get(User, current_user_id)
 
         if user is None:
             return {"error": "user not found"}, 404
 
         account = Account(
-            user_id=user_id,
+            user_id=current_user_id,
             name=name,
             account_type=account_type,
             currency=currency,
@@ -106,6 +118,7 @@ def create_account():
 
 
 @accounts_bp.get("/<uuid:account_id>")
+@jwt_required()
 def get_account(account_id: uuid.UUID):
     try:
         account = db.session.get(Account, account_id)
@@ -116,10 +129,15 @@ def get_account(account_id: uuid.UUID):
     if account is None:
         return {"error": "account not found"}, 404
 
+    forbidden = require_owner_or(account.user_id)
+    if forbidden is not None:
+        return forbidden
+
     return _serialize_account(account), 200
 
 
 @accounts_bp.put("/<uuid:account_id>")
+@jwt_required()
 def update_account(account_id: uuid.UUID):
     payload = request.get_json(silent=True)
 
@@ -134,6 +152,16 @@ def update_account(account_id: uuid.UUID):
 
     if account is None:
         return {"error": "account not found"}, 404
+
+    forbidden = require_owner_or(account.user_id)
+    if forbidden is not None:
+        return forbidden
+
+    # Ownership cannot be transferred via the request body.
+    if "user_id" in payload:
+        if isinstance(payload["user_id"], str) and payload["user_id"]:
+            return {"error": "forbidden"}, 403
+        return {"error": "forbidden"}, 403
 
     if "name" in payload:
         name = payload["name"]
@@ -173,6 +201,7 @@ def update_account(account_id: uuid.UUID):
 
 
 @accounts_bp.delete("/<uuid:account_id>")
+@jwt_required()
 def delete_account(account_id: uuid.UUID):
     try:
         account = db.session.get(Account, account_id)
@@ -182,6 +211,10 @@ def delete_account(account_id: uuid.UUID):
 
     if account is None:
         return {"error": "account not found"}, 404
+
+    forbidden = require_owner_or(account.user_id)
+    if forbidden is not None:
+        return forbidden
 
     try:
         db.session.delete(account)
@@ -195,8 +228,13 @@ def delete_account(account_id: uuid.UUID):
 
 
 @users_bp.get("/<uuid:user_id>/accounts")
+@jwt_required()
 def list_accounts(user_id: uuid.UUID):
-    """List all accounts belonging to a user."""
+    """List all accounts belonging to a user (owner only)."""
+    forbidden = require_owner_or(user_id)
+    if forbidden is not None:
+        return forbidden
+
     try:
         user = db.session.get(User, user_id)
     except SQLAlchemyError:

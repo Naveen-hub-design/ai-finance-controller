@@ -4,11 +4,13 @@ import uuid
 from decimal import Decimal
 
 from flask import Blueprint, current_app
+from flask_jwt_extended import jwt_required
 from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..extensions import db
 from ..models import Account, Transaction, User
+from ._ownership import require_owner_or
 
 
 financial_summary_bp = Blueprint(
@@ -19,7 +21,12 @@ financial_summary_bp = Blueprint(
 
 
 @financial_summary_bp.get("/<uuid:user_id>")
+@jwt_required()
 def get_financial_summary(user_id: uuid.UUID):
+    forbidden = require_owner_or(user_id)
+    if forbidden is not None:
+        return forbidden
+
     try:
         user = db.session.get(User, user_id)
     except SQLAlchemyError:

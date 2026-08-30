@@ -17,10 +17,23 @@ def _create_user(
 ) -> dict:
     response = client.post(
         "/api/users",
-        json={"email": email, "name": "Audit Route User"},
+        json={"email": email, "name": "Audit Route User", "password": "test-password-123"},
     )
     assert response.status_code == 201, response.get_json()
-    return response.get_json()
+    user = response.get_json()
+    user["_token"] = _token_for(client, user["id"])
+    return user
+
+
+def _token_for(client: FlaskClient, identity) -> str:
+    from flask_jwt_extended import create_access_token
+
+    with client.application.app_context():
+        return create_access_token(identity=str(identity))
+
+
+def _headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _valid_body(**overrides) -> dict:
@@ -35,10 +48,11 @@ def _valid_body(**overrides) -> dict:
     return body
 
 
-def _post_record(client: FlaskClient, user_id: str, body=None) -> object:
+def _post_record(client: FlaskClient, user_id: str, body=None, headers=None) -> object:
     return client.post(
         f"/api/users/{user_id}/audit-record",
         json=body if body is not None else _valid_body(),
+        headers=headers,
     )
 
 
@@ -50,7 +64,7 @@ def _post_record(client: FlaskClient, user_id: str, body=None) -> object:
 def test_successful_post_returns_201(client: FlaskClient) -> None:
     user = _create_user(client)
 
-    response = _post_record(client, user["id"])
+    response = _post_record(client, user["id"], headers=_headers(user["_token"]))
 
     assert response.status_code == 201
     data = response.get_json()
@@ -64,7 +78,7 @@ def test_successful_post_returns_201(client: FlaskClient) -> None:
 def test_post_exact_response_shape(client: FlaskClient) -> None:
     user = _create_user(client)
 
-    response = _post_record(client, user["id"])
+    response = _post_record(client, user["id"], headers=_headers(user["_token"]))
 
     assert response.status_code == 201
     data = response.get_json()
@@ -86,7 +100,8 @@ def test_payload_preservation_via_api(client: FlaskClient) -> None:
     }
 
     response = _post_record(
-        client, user["id"], _valid_body(kind="risk", payload=payload)
+        client, user["id"], _valid_body(kind="risk", payload=payload),
+        headers=_headers(user["_token"]),
     )
 
     assert response.status_code == 201
@@ -94,71 +109,91 @@ def test_payload_preservation_via_api(client: FlaskClient) -> None:
 
 
 def test_post_unknown_user_returns_404(client: FlaskClient) -> None:
-    response = _post_record(client, str(uuid.uuid4()))
+    rid = uuid.uuid4()
+    response = _post_record(client, str(rid), headers=_headers(_token_for(client, rid)))
 
     assert response.status_code == 404
     assert response.get_json()["error"] == "user not found"
 
 
 def test_post_missing_json_body_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = client.post(
-        f"/api/users/{uuid.uuid4()}/audit-record",
+        f"/api/users/{rid}/audit-record",
         data="",
         content_type="application/json",
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 400
 
 
 def test_post_invalid_json_body_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = client.post(
-        f"/api/users/{uuid.uuid4()}/audit-record",
+        f"/api/users/{rid}/audit-record",
         data="not json",
         content_type="application/json",
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 400
 
 
 def test_post_missing_kind_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = _post_record(
-        client, str(uuid.uuid4()), {"payload": {}}
+        client, str(rid), {"payload": {}}, headers=_headers(_token_for(client, rid))
     )
 
     assert response.status_code == 400
 
 
 def test_post_invalid_kind_returns_400(client: FlaskClient) -> None:
-    response = _post_record(client, str(uuid.uuid4()), _valid_body(kind="fraud"))
+    rid = uuid.uuid4()
+    response = _post_record(
+        client, str(rid), _valid_body(kind="fraud"),
+        headers=_headers(_token_for(client, rid)),
+    )
 
     assert response.status_code == 400
 
 
 def test_post_null_kind_returns_400(client: FlaskClient) -> None:
-    response = _post_record(client, str(uuid.uuid4()), _valid_body(kind=None))
+    rid = uuid.uuid4()
+    response = _post_record(
+        client, str(rid), _valid_body(kind=None),
+        headers=_headers(_token_for(client, rid)),
+    )
 
     assert response.status_code == 400
 
 
 def test_post_missing_payload_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = _post_record(
-        client, str(uuid.uuid4()), {"kind": "decision"}
+        client, str(rid), {"kind": "decision"},
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 400
 
 
 def test_post_non_object_payload_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = _post_record(
-        client, str(uuid.uuid4()), _valid_body(payload=["a", "b"])
+        client, str(rid), _valid_body(payload=["a", "b"]),
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 400
 
 
 def test_post_string_payload_returns_400(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = _post_record(
-        client, str(uuid.uuid4()), _valid_body(payload="not an object")
+        client, str(rid), _valid_body(payload="not an object"),
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 400
@@ -184,7 +219,7 @@ def test_commit_failure_returns_500_and_rolls_back(
         "app.routes.m4_audit.db.session.commit",
         side_effect=SQLAlchemyError("boom"),
     ):
-        response = _post_record(client, user["id"])
+        response = _post_record(client, user["id"], headers=_headers(user["_token"]))
 
     assert response.status_code == 500
     assert response.get_json()["error"] == "internal server error"
@@ -197,9 +232,9 @@ def test_commit_failure_returns_500_and_rolls_back(
 
 def test_successful_get_returns_records(client: FlaskClient) -> None:
     user = _create_user(client)
-    _post_record(client, user["id"])
+    _post_record(client, user["id"], headers=_headers(user["_token"]))
 
-    response = client.get(f"/api/users/{user['id']}/audit")
+    response = client.get(f"/api/users/{user['id']}/audit", headers=_headers(user["_token"]))
 
     assert response.status_code == 200
     data = response.get_json()
@@ -208,7 +243,8 @@ def test_successful_get_returns_records(client: FlaskClient) -> None:
 
 
 def test_get_unknown_user_returns_404(client: FlaskClient) -> None:
-    response = client.get(f"/api/users/{uuid.uuid4()}/audit")
+    rid = uuid.uuid4()
+    response = client.get(f"/api/users/{rid}/audit", headers=_headers(_token_for(client, rid)))
 
     assert response.status_code == 404
     assert response.get_json()["error"] == "user not found"
@@ -217,7 +253,7 @@ def test_get_unknown_user_returns_404(client: FlaskClient) -> None:
 def test_get_empty_list(client: FlaskClient) -> None:
     user = _create_user(client)
 
-    response = client.get(f"/api/users/{user['id']}/audit")
+    response = client.get(f"/api/users/{user['id']}/audit", headers=_headers(user["_token"]))
 
     assert response.status_code == 200
     assert response.get_json()["records"] == []
@@ -226,10 +262,10 @@ def test_get_empty_list(client: FlaskClient) -> None:
 def test_get_user_isolation(client: FlaskClient) -> None:
     user_a = _create_user(client, email="audit-a@example.com")
     user_b = _create_user(client, email="audit-b@example.com")
-    _post_record(client, user_a["id"], _valid_body(kind="decision"))
-    _post_record(client, user_b["id"], _valid_body(kind="risk"))
+    _post_record(client, user_a["id"], _valid_body(kind="decision"), headers=_headers(user_a["_token"]))
+    _post_record(client, user_b["id"], _valid_body(kind="risk"), headers=_headers(user_b["_token"]))
 
-    response = client.get(f"/api/users/{user_a['id']}/audit")
+    response = client.get(f"/api/users/{user_a['id']}/audit", headers=_headers(user_a["_token"]))
 
     assert response.status_code == 200
     records = response.get_json()["records"]
@@ -264,7 +300,7 @@ def test_get_deterministic_ordering(app, client: FlaskClient) -> None:
         db.session.add_all([r_old, r_mid, r_new])
         db.session.commit()
 
-    response = client.get(f"/api/users/{user['id']}/audit")
+    response = client.get(f"/api/users/{user['id']}/audit", headers=_headers(user["_token"]))
 
     assert response.status_code == 200
     tags = [r["payload"]["tag"] for r in response.get_json()["records"]]
@@ -280,7 +316,7 @@ def test_get_database_failure_returns_500(client: FlaskClient) -> None:
         "app.routes.m4_audit.db.session.query",
         side_effect=SQLAlchemyError("boom"),
     ):
-        response = client.get(f"/api/users/{user['id']}/audit")
+        response = client.get(f"/api/users/{user['id']}/audit", headers=_headers(user["_token"]))
 
     assert response.status_code == 500
     assert response.get_json()["error"] == "internal server error"
@@ -293,7 +329,7 @@ def test_get_database_failure_returns_500(client: FlaskClient) -> None:
 
 def test_no_update_route(client: FlaskClient) -> None:
     user = _create_user(client)
-    created = _post_record(client, user["id"]).get_json()
+    created = _post_record(client, user["id"], headers=_headers(user["_token"])).get_json()
 
     response = client.put(
         f"/api/users/{user['id']}/audit-record/{created['id']}",
@@ -310,7 +346,7 @@ def test_no_update_route(client: FlaskClient) -> None:
 
 def test_no_delete_route(client: FlaskClient) -> None:
     user = _create_user(client)
-    created = _post_record(client, user["id"]).get_json()
+    created = _post_record(client, user["id"], headers=_headers(user["_token"])).get_json()
 
     response = client.delete(
         f"/api/users/{user['id']}/audit-record/{created['id']}"

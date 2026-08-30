@@ -5,16 +5,31 @@ import uuid
 from flask.testing import FlaskClient
 
 
-def _create_user(client: FlaskClient) -> dict:
-    response = client.post(
+def _auth(
+    client: FlaskClient,
+    email: str = "owner@example.com",
+    password: str = "test-password-123",
+) -> tuple[dict, str]:
+    created = client.post(
         "/api/users",
-        json={"email": "transaction-owner@example.com"},
+        json={"email": email, "password": password},
     )
-    assert response.status_code == 201, response.get_json()
-    return response.get_json()
+    assert created.status_code == 201, created.get_json()
+    login = client.post("/api/users/login", json={"email": email, "password": password})
+    assert login.status_code == 200, login.get_json()
+    body = login.get_json()
+    return body["user"], body["access_token"]
 
 
-def _create_account(client: FlaskClient, user_id: str) -> dict:
+def _headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _create_user(client: FlaskClient) -> tuple[dict, str]:
+    return _auth(client, email="transaction-owner@example.com")
+
+
+def _create_account(client: FlaskClient, user_id: str, token: str) -> dict:
     response = client.post(
         "/api/accounts",
         json={
@@ -24,12 +39,13 @@ def _create_account(client: FlaskClient, user_id: str) -> dict:
             "currency": "INR",
             "current_balance": "50000",
         },
+        headers=_headers(token),
     )
     assert response.status_code == 201, response.get_json()
     return response.get_json()
 
 
-def _create_category(client: FlaskClient, user_id: str) -> dict:
+def _create_category(client: FlaskClient, user_id: str, token: str) -> dict:
     response = client.post(
         "/api/categories",
         json={
@@ -37,14 +53,15 @@ def _create_category(client: FlaskClient, user_id: str) -> dict:
             "name": "Groceries",
             "category_type": "expense",
         },
+        headers=_headers(token),
     )
     assert response.status_code == 201, response.get_json()
     return response.get_json()
 
 
 def test_create_transaction_returns_201(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     response = client.post(
         "/api/transactions",
@@ -55,6 +72,7 @@ def test_create_transaction_returns_201(client: FlaskClient) -> None:
             "description": "Groceries",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
 
     assert response.status_code == 201
@@ -70,9 +88,9 @@ def test_create_transaction_returns_201(client: FlaskClient) -> None:
 
 
 def test_create_transaction_with_category_returns_201(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
-    category = _create_category(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
+    category = _create_category(client, user["id"], token)
 
     response = client.post(
         "/api/transactions",
@@ -84,6 +102,7 @@ def test_create_transaction_with_category_returns_201(client: FlaskClient) -> No
             "description": "Vegetables",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
 
     assert response.status_code == 201
@@ -91,6 +110,8 @@ def test_create_transaction_with_category_returns_201(client: FlaskClient) -> No
 
 
 def test_create_transaction_rejects_invalid_account_id(client: FlaskClient) -> None:
+    _, token = _auth(client)
+
     response = client.post(
         "/api/transactions",
         json={
@@ -99,6 +120,7 @@ def test_create_transaction_rejects_invalid_account_id(client: FlaskClient) -> N
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
 
     assert response.status_code == 400
@@ -106,6 +128,8 @@ def test_create_transaction_rejects_invalid_account_id(client: FlaskClient) -> N
 
 
 def test_create_transaction_rejects_missing_account(client: FlaskClient) -> None:
+    _, token = _auth(client)
+
     response = client.post(
         "/api/transactions",
         json={
@@ -114,6 +138,7 @@ def test_create_transaction_rejects_missing_account(client: FlaskClient) -> None
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
 
     assert response.status_code == 404
@@ -121,8 +146,8 @@ def test_create_transaction_rejects_missing_account(client: FlaskClient) -> None
 
 
 def test_create_transaction_rejects_missing_category(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     response = client.post(
         "/api/transactions",
@@ -133,6 +158,7 @@ def test_create_transaction_rejects_missing_category(client: FlaskClient) -> Non
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
 
     assert response.status_code == 404
@@ -142,16 +168,23 @@ def test_create_transaction_rejects_missing_category(client: FlaskClient) -> Non
 def test_create_transaction_rejects_cross_user_category(
     client: FlaskClient,
 ) -> None:
-    owner = _create_user(client)
+    owner, owner_token = _create_user(client)
     other_user_response = client.post(
         "/api/users",
-        json={"email": "other@example.com"},
+        json={"email": "other@example.com", "password": "test-password-123"},
     )
     assert other_user_response.status_code == 201
     other_user = other_user_response.get_json()
 
-    account = _create_account(client, owner["id"])
-    foreign_category = _create_category(client, other_user["id"])
+    other_login = client.post(
+        "/api/users/login",
+        json={"email": "other@example.com", "password": "test-password-123"},
+    )
+    assert other_login.status_code == 200
+    other_token = other_login.get_json()["access_token"]
+
+    account = _create_account(client, owner["id"], owner_token)
+    foreign_category = _create_category(client, other_user["id"], other_token)
 
     response = client.post(
         "/api/transactions",
@@ -162,6 +195,7 @@ def test_create_transaction_rejects_cross_user_category(
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(owner_token),
     )
 
     assert response.status_code == 400
@@ -171,9 +205,9 @@ def test_create_transaction_rejects_cross_user_category(
 def test_create_transaction_with_same_user_category_returns_201(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
-    category = _create_category(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
+    category = _create_category(client, user["id"], token)
 
     response = client.post(
         "/api/transactions",
@@ -184,6 +218,7 @@ def test_create_transaction_with_same_user_category_returns_201(
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
 
     assert response.status_code == 201
@@ -193,8 +228,8 @@ def test_create_transaction_with_same_user_category_returns_201(
 def test_create_transaction_rejects_invalid_transaction_type(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     response = client.post(
         "/api/transactions",
@@ -204,6 +239,7 @@ def test_create_transaction_rejects_invalid_transaction_type(
             "transaction_type": "invalid",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
 
     assert response.status_code == 400
@@ -213,8 +249,8 @@ def test_create_transaction_rejects_invalid_transaction_type(
 def test_create_transaction_rejects_non_positive_amount(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     response = client.post(
         "/api/transactions",
@@ -224,6 +260,7 @@ def test_create_transaction_rejects_non_positive_amount(
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
 
     assert response.status_code == 400
@@ -231,8 +268,8 @@ def test_create_transaction_rejects_non_positive_amount(
 
 
 def test_create_transaction_rejects_invalid_date(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     response = client.post(
         "/api/transactions",
@@ -242,6 +279,7 @@ def test_create_transaction_rejects_invalid_date(client: FlaskClient) -> None:
             "transaction_type": "expense",
             "transaction_date": "24-08-2026",
         },
+        headers=_headers(token),
     )
 
     assert response.status_code == 400
@@ -249,8 +287,8 @@ def test_create_transaction_rejects_invalid_date(client: FlaskClient) -> None:
 
 
 def test_get_existing_transaction_returns_200(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     created = client.post(
         "/api/transactions",
@@ -260,19 +298,24 @@ def test_get_existing_transaction_returns_200(client: FlaskClient) -> None:
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
 
     assert created.status_code == 201
     transaction = created.get_json()
 
-    response = client.get(f"/api/transactions/{transaction['id']}")
+    response = client.get(
+        f"/api/transactions/{transaction['id']}", headers=_headers(token)
+    )
 
     assert response.status_code == 200
     assert response.get_json() == transaction
 
 
 def test_get_nonexistent_transaction_returns_404(client: FlaskClient) -> None:
-    response = client.get(f"/api/transactions/{uuid.uuid4()}")
+    _, token = _auth(client)
+
+    response = client.get(f"/api/transactions/{uuid.uuid4()}", headers=_headers(token))
 
     assert response.status_code == 404
     assert response.get_json()["error"] == "transaction not found"
@@ -282,8 +325,8 @@ def test_get_nonexistent_transaction_returns_404(client: FlaskClient) -> None:
 
 
 def test_update_transaction_returns_200(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     created = client.post(
         "/api/transactions",
@@ -293,6 +336,7 @@ def test_update_transaction_returns_200(client: FlaskClient) -> None:
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
     assert created.status_code == 201
     tx = created.get_json()
@@ -300,6 +344,7 @@ def test_update_transaction_returns_200(client: FlaskClient) -> None:
     response = client.put(
         f"/api/transactions/{tx['id']}",
         json={"amount": "999.99", "description": "Updated"},
+        headers=_headers(token),
     )
 
     assert response.status_code == 200
@@ -313,8 +358,8 @@ def test_update_transaction_returns_200(client: FlaskClient) -> None:
 def test_update_transaction_preserves_untouched_fields(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     created = client.post(
         "/api/transactions",
@@ -325,6 +370,7 @@ def test_update_transaction_preserves_untouched_fields(
             "description": "Salary",
             "transaction_date": "2026-08-01",
         },
+        headers=_headers(token),
     )
     assert created.status_code == 201
     tx = created.get_json()
@@ -332,6 +378,7 @@ def test_update_transaction_preserves_untouched_fields(
     response = client.put(
         f"/api/transactions/{tx['id']}",
         json={"amount": "750"},
+        headers=_headers(token),
     )
 
     assert response.status_code == 200
@@ -346,8 +393,8 @@ def test_update_transaction_preserves_untouched_fields(
 def test_update_transaction_rejects_invalid_transaction_type(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     created = client.post(
         "/api/transactions",
@@ -357,6 +404,7 @@ def test_update_transaction_rejects_invalid_transaction_type(
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
     assert created.status_code == 201
     tx = created.get_json()
@@ -364,6 +412,7 @@ def test_update_transaction_rejects_invalid_transaction_type(
     response = client.put(
         f"/api/transactions/{tx['id']}",
         json={"transaction_type": "invalid"},
+        headers=_headers(token),
     )
 
     assert response.status_code == 400
@@ -373,8 +422,8 @@ def test_update_transaction_rejects_invalid_transaction_type(
 def test_update_transaction_rejects_invalid_amount(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     created = client.post(
         "/api/transactions",
@@ -384,6 +433,7 @@ def test_update_transaction_rejects_invalid_amount(
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
     assert created.status_code == 201
     tx = created.get_json()
@@ -391,6 +441,7 @@ def test_update_transaction_rejects_invalid_amount(
     response = client.put(
         f"/api/transactions/{tx['id']}",
         json={"amount": "not-a-number"},
+        headers=_headers(token),
     )
 
     assert response.status_code == 400
@@ -400,8 +451,8 @@ def test_update_transaction_rejects_invalid_amount(
 def test_update_transaction_rejects_invalid_date(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     created = client.post(
         "/api/transactions",
@@ -411,6 +462,7 @@ def test_update_transaction_rejects_invalid_date(
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
     assert created.status_code == 201
     tx = created.get_json()
@@ -418,6 +470,7 @@ def test_update_transaction_rejects_invalid_date(
     response = client.put(
         f"/api/transactions/{tx['id']}",
         json={"transaction_date": "24-08-2026"},
+        headers=_headers(token),
     )
 
     assert response.status_code == 400
@@ -427,9 +480,12 @@ def test_update_transaction_rejects_invalid_date(
 def test_update_nonexistent_transaction_returns_404(
     client: FlaskClient,
 ) -> None:
+    _, token = _auth(client)
+
     response = client.put(
         f"/api/transactions/{uuid.uuid4()}",
         json={"amount": "100"},
+        headers=_headers(token),
     )
 
     assert response.status_code == 404
@@ -439,16 +495,23 @@ def test_update_nonexistent_transaction_returns_404(
 def test_update_transaction_rejects_cross_user_category(
     client: FlaskClient,
 ) -> None:
-    owner = _create_user(client)
+    owner, owner_token = _create_user(client)
     other_response = client.post(
         "/api/users",
-        json={"email": "other-cat@example.com"},
+        json={"email": "other-cat@example.com", "password": "test-password-123"},
     )
     assert other_response.status_code == 201
     other_user = other_response.get_json()
 
-    account = _create_account(client, owner["id"])
-    foreign_category = _create_category(client, other_user["id"])
+    other_login = client.post(
+        "/api/users/login",
+        json={"email": "other-cat@example.com", "password": "test-password-123"},
+    )
+    assert other_login.status_code == 200
+    other_token = other_login.get_json()["access_token"]
+
+    account = _create_account(client, owner["id"], owner_token)
+    foreign_category = _create_category(client, other_user["id"], other_token)
 
     created = client.post(
         "/api/transactions",
@@ -458,6 +521,7 @@ def test_update_transaction_rejects_cross_user_category(
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(owner_token),
     )
     assert created.status_code == 201
     tx = created.get_json()
@@ -465,18 +529,63 @@ def test_update_transaction_rejects_cross_user_category(
     response = client.put(
         f"/api/transactions/{tx['id']}",
         json={"category_id": foreign_category["id"]},
+        headers=_headers(owner_token),
     )
 
     assert response.status_code == 400
     assert response.get_json()["error"] == "category does not belong to user"
 
 
+def test_update_transaction_rejects_cross_user_account(
+    client: FlaskClient,
+) -> None:
+    owner, owner_token = _create_user(client)
+    other_response = client.post(
+        "/api/users",
+        json={"email": "other-acct@example.com", "password": "test-password-123"},
+    )
+    assert other_response.status_code == 201
+    other_user = other_response.get_json()
+
+    other_login = client.post(
+        "/api/users/login",
+        json={"email": "other-acct@example.com", "password": "test-password-123"},
+    )
+    assert other_login.status_code == 200
+    other_token = other_login.get_json()["access_token"]
+
+    account = _create_account(client, owner["id"], owner_token)
+    foreign_account = _create_account(client, other_user["id"], other_token)
+
+    created = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "amount": "100",
+            "transaction_type": "expense",
+            "transaction_date": "2026-08-24",
+        },
+        headers=_headers(owner_token),
+    )
+    assert created.status_code == 201
+    tx = created.get_json()
+
+    response = client.put(
+        f"/api/transactions/{tx['id']}",
+        json={"account_id": foreign_account["id"]},
+        headers=_headers(owner_token),
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "forbidden"
+
+
 def test_update_transaction_clears_category_to_null(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
-    category = _create_category(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
+    category = _create_category(client, user["id"], token)
 
     created = client.post(
         "/api/transactions",
@@ -487,6 +596,7 @@ def test_update_transaction_clears_category_to_null(
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
     assert created.status_code == 201
     tx = created.get_json()
@@ -495,6 +605,7 @@ def test_update_transaction_clears_category_to_null(
     response = client.put(
         f"/api/transactions/{tx['id']}",
         json={"category_id": None},
+        headers=_headers(token),
     )
 
     assert response.status_code == 200
@@ -505,8 +616,8 @@ def test_update_transaction_clears_category_to_null(
 
 
 def test_delete_transaction_returns_204(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     created = client.post(
         "/api/transactions",
@@ -516,11 +627,14 @@ def test_delete_transaction_returns_204(client: FlaskClient) -> None:
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
     assert created.status_code == 201
     tx = created.get_json()
 
-    response = client.delete(f"/api/transactions/{tx['id']}")
+    response = client.delete(
+        f"/api/transactions/{tx['id']}", headers=_headers(token)
+    )
 
     assert response.status_code == 204
     assert response.data == b""
@@ -529,8 +643,8 @@ def test_delete_transaction_returns_204(client: FlaskClient) -> None:
 def test_deleted_transaction_cannot_be_fetched(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"])
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
 
     created = client.post(
         "/api/transactions",
@@ -540,20 +654,27 @@ def test_deleted_transaction_cannot_be_fetched(
             "transaction_type": "expense",
             "transaction_date": "2026-08-24",
         },
+        headers=_headers(token),
     )
     assert created.status_code == 201
     tx = created.get_json()
 
-    client.delete(f"/api/transactions/{tx['id']}")
+    client.delete(f"/api/transactions/{tx['id']}", headers=_headers(token))
 
-    response = client.get(f"/api/transactions/{tx['id']}")
+    response = client.get(
+        f"/api/transactions/{tx['id']}", headers=_headers(token)
+    )
     assert response.status_code == 404
 
 
 def test_delete_nonexistent_transaction_returns_404(
     client: FlaskClient,
 ) -> None:
-    response = client.delete(f"/api/transactions/{uuid.uuid4()}")
+    _, token = _auth(client)
+
+    response = client.delete(
+        f"/api/transactions/{uuid.uuid4()}", headers=_headers(token)
+    )
 
     assert response.status_code == 404
     assert response.get_json()["error"] == "transaction not found"

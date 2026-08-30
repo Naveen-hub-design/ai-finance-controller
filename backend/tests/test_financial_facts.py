@@ -1,24 +1,34 @@
 """Tests for the financial facts API endpoint."""
 
-import uuid
-
 from flask.testing import FlaskClient
 
 
-def _create_user(client: FlaskClient, email: str = "facts@example.com") -> dict:
-    response = client.post(
+def _auth(
+    client: FlaskClient,
+    email: str = "facts@example.com",
+    password: str = "test-password-123",
+) -> tuple[dict, str]:
+    created = client.post(
         "/api/users",
-        json={
-            "email": email,
-            "name": "Facts User",
-        },
+        json={"email": email, "full_name": "Facts User", "password": password},
     )
-    assert response.status_code == 201, response.get_json()
-    return response.get_json()
+    assert created.status_code == 201, created.get_json()
+    login = client.post(
+        "/api/users/login",
+        json={"email": email, "password": password},
+    )
+    assert login.status_code == 200, login.get_json()
+    body = login.get_json()
+    return body["user"], body["access_token"]
+
+
+def _headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _create_account(
     client: FlaskClient,
+    token: str,
     user_id: str,
     name: str,
     balance: str,
@@ -32,6 +42,7 @@ def _create_account(
             "currency": "INR",
             "current_balance": balance,
         },
+        headers=_headers(token),
     )
     assert response.status_code == 201, response.get_json()
     return response.get_json()
@@ -39,6 +50,7 @@ def _create_account(
 
 def _create_transaction(
     client: FlaskClient,
+    token: str,
     account_id: str,
     amount: str,
     transaction_type: str,
@@ -57,22 +69,25 @@ def _create_transaction(
     response = client.post(
         "/api/transactions",
         json=payload,
+        headers=_headers(token),
     )
 
     assert response.status_code == 201, response.get_json()
     return response.get_json()
 
 
-def _get_facts(client: FlaskClient, user_id: str) -> dict:
-    response = client.get(f"/api/users/{user_id}/financial-facts")
+def _get_facts(client: FlaskClient, token: str, user_id: str) -> dict:
+    response = client.get(
+        f"/api/users/{user_id}/financial-facts", headers=_headers(token)
+    )
     assert response.status_code == 200
     return response.get_json()
 
 
 def test_empty_user_returns_zero_facts(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
-    data = _get_facts(client, user["id"])
+    data = _get_facts(client, token, user["id"])
 
     assert data["total_income"] == "0.0000"
     assert data["total_expenses"] == "0.0000"
@@ -89,13 +104,13 @@ def test_empty_user_returns_zero_facts(client: FlaskClient) -> None:
 def test_returns_income_expenses_and_balance(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"], "Main Bank", "50000")
+    user, token = _auth(client)
+    account = _create_account(client, token, user["id"], "Main Bank", "50000")
 
-    _create_transaction(client, account["id"], "5000", "income")
-    _create_transaction(client, account["id"], "1250", "expense")
+    _create_transaction(client, token, account["id"], "5000", "income")
+    _create_transaction(client, token, account["id"], "1250", "expense")
 
-    data = _get_facts(client, user["id"])
+    data = _get_facts(client, token, user["id"])
 
     assert data["total_income"] == "5000.0000"
     assert data["total_expenses"] == "1250.0000"
@@ -104,14 +119,14 @@ def test_returns_income_expenses_and_balance(
 
 
 def test_returns_transaction_counts(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"], "Main Bank", "10000")
+    user, token = _auth(client)
+    account = _create_account(client, token, user["id"], "Main Bank", "10000")
 
-    _create_transaction(client, account["id"], "3000", "income")
-    _create_transaction(client, account["id"], "1000", "expense")
-    _create_transaction(client, account["id"], "500", "expense")
+    _create_transaction(client, token, account["id"], "3000", "income")
+    _create_transaction(client, token, account["id"], "1000", "expense")
+    _create_transaction(client, token, account["id"], "500", "expense")
 
-    data = _get_facts(client, user["id"])
+    data = _get_facts(client, token, user["id"])
 
     assert data["transaction_count"] == 3
     assert data["income_transaction_count"] == 1
@@ -119,8 +134,8 @@ def test_returns_transaction_counts(client: FlaskClient) -> None:
 
 
 def test_returns_spending_by_category(client: FlaskClient) -> None:
-    user = _create_user(client)
-    account = _create_account(client, user["id"], "Main Bank", "20000")
+    user, token = _auth(client)
+    account = _create_account(client, token, user["id"], "Main Bank", "20000")
 
     groceries_response = client.post(
         "/api/categories",
@@ -129,6 +144,7 @@ def test_returns_spending_by_category(client: FlaskClient) -> None:
             "name": "Groceries",
             "category_type": "expense",
         },
+        headers=_headers(token),
     )
     assert groceries_response.status_code == 201
     groceries = groceries_response.get_json()
@@ -140,15 +156,16 @@ def test_returns_spending_by_category(client: FlaskClient) -> None:
             "name": "Food",
             "category_type": "expense",
         },
+        headers=_headers(token),
     )
     assert food_response.status_code == 201
     food = food_response.get_json()
 
-    _create_transaction(client, account["id"], "3000", "expense", groceries["id"])
-    _create_transaction(client, account["id"], "1500", "expense", groceries["id"])
-    _create_transaction(client, account["id"], "2000", "expense", food["id"])
+    _create_transaction(client, token, account["id"], "3000", "expense", groceries["id"])
+    _create_transaction(client, token, account["id"], "1500", "expense", groceries["id"])
+    _create_transaction(client, token, account["id"], "2000", "expense", food["id"])
 
-    data = _get_facts(client, user["id"])
+    data = _get_facts(client, token, user["id"])
 
     assert data["spending_by_category"] == [
         {"category": "Groceries", "amount": "4500.0000"},
@@ -157,7 +174,7 @@ def test_returns_spending_by_category(client: FlaskClient) -> None:
 
 
 def test_returns_budgets(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     category_response = client.post(
         "/api/categories",
@@ -166,6 +183,7 @@ def test_returns_budgets(client: FlaskClient) -> None:
             "name": "Groceries",
             "category_type": "expense",
         },
+        headers=_headers(token),
     )
     assert category_response.status_code == 201
     category = category_response.get_json()
@@ -180,10 +198,11 @@ def test_returns_budgets(client: FlaskClient) -> None:
             "start_date": "2026-08-01",
             "end_date": "2026-08-31",
         },
+        headers=_headers(token),
     )
     assert budget_response.status_code == 201
 
-    data = _get_facts(client, user["id"])
+    data = _get_facts(client, token, user["id"])
 
     assert len(data["budgets"]) == 1
     assert data["budgets"][0]["category_id"] == category["id"]
@@ -194,7 +213,7 @@ def test_returns_budgets(client: FlaskClient) -> None:
 def test_returns_financial_goals_with_progress(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
+    user, token = _auth(client)
 
     goal_response = client.post(
         "/api/financial-goals",
@@ -204,10 +223,11 @@ def test_returns_financial_goals_with_progress(
             "target_amount": "100000",
             "current_amount": "25000",
         },
+        headers=_headers(token),
     )
     assert goal_response.status_code == 201
 
-    data = _get_facts(client, user["id"])
+    data = _get_facts(client, token, user["id"])
 
     assert len(data["financial_goals"]) == 1
 
@@ -221,7 +241,13 @@ def test_returns_financial_goals_with_progress(
 
 
 def test_nonexistent_user_returns_404(client: FlaskClient) -> None:
-    response = client.get(f"/api/users/{uuid.uuid4()}/financial-facts")
+    user, token = _auth(client)
+    deleted = client.delete(f"/api/users/{user['id']}", headers=_headers(token))
+    assert deleted.status_code == 204
+
+    response = client.get(
+        f"/api/users/{user['id']}/financial-facts", headers=_headers(token)
+    )
 
     assert response.status_code == 404
     assert response.get_json()["error"] == "user not found"
@@ -234,20 +260,20 @@ def test_invalid_user_id_returns_404(client: FlaskClient) -> None:
 
 
 def test_facts_are_isolated_by_user(client: FlaskClient) -> None:
-    user_a = _create_user(client, email="user-a-facts@example.com")
-    user_b = _create_user(client, email="user-b-facts@example.com")
+    user_a, token_a = _auth(client, email="user-a-facts@example.com")
+    user_b, token_b = _auth(client, email="user-b-facts@example.com")
 
-    account_a = _create_account(client, user_a["id"], "A Bank", "10000")
-    account_b = _create_account(client, user_b["id"], "B Bank", "90000")
+    account_a = _create_account(client, token_a, user_a["id"], "A Bank", "10000")
+    account_b = _create_account(client, token_b, user_b["id"], "B Bank", "90000")
 
-    _create_transaction(client, account_a["id"], "5000", "income")
-    _create_transaction(client, account_a["id"], "500", "expense")
+    _create_transaction(client, token_a, account_a["id"], "5000", "income")
+    _create_transaction(client, token_a, account_a["id"], "500", "expense")
 
-    _create_transaction(client, account_b["id"], "50000", "income")
-    _create_transaction(client, account_b["id"], "20000", "expense")
+    _create_transaction(client, token_b, account_b["id"], "50000", "income")
+    _create_transaction(client, token_b, account_b["id"], "20000", "expense")
 
-    data_a = _get_facts(client, user_a["id"])
-    data_b = _get_facts(client, user_b["id"])
+    data_a = _get_facts(client, token_a, user_a["id"])
+    data_b = _get_facts(client, token_b, user_b["id"])
 
     assert data_a["total_income"] == "5000.0000"
     assert data_a["total_expenses"] == "500.0000"

@@ -10,10 +10,23 @@ from flask.testing import FlaskClient
 def _create_user(client: FlaskClient, email: str = "risk-route@example.com") -> dict:
     response = client.post(
         "/api/users",
-        json={"email": email, "name": "Risk Route User"},
+        json={"email": email, "name": "Risk Route User", "password": "test-password-123"},
     )
     assert response.status_code == 201, response.get_json()
-    return response.get_json()
+    user = response.get_json()
+    user["_token"] = _token_for(client, user["id"])
+    return user
+
+
+def _token_for(client: FlaskClient, identity) -> str:
+    from flask_jwt_extended import create_access_token
+
+    with client.application.app_context():
+        return create_access_token(identity=str(identity))
+
+
+def _headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _patch_service(return_value=None, side_effect=None):
@@ -43,7 +56,8 @@ def test_existing_user_no_signals_returns_200(client: FlaskClient) -> None:
 
     with _patch_service(return_value=[]):
         response = client.get(
-            f"/api/users/{user['id']}/risk-intelligence"
+            f"/api/users/{user['id']}/risk-intelligence",
+            headers=_headers(user["_token"]),
         )
 
     assert response.status_code == 200
@@ -59,7 +73,8 @@ def test_existing_user_with_signals_returns_200_exact(
 
     with _patch_service(return_value=_sample_signals()):
         response = client.get(
-            f"/api/users/{user['id']}/risk-intelligence"
+            f"/api/users/{user['id']}/risk-intelligence",
+            headers=_headers(user["_token"]),
         )
 
     assert response.status_code == 200
@@ -69,8 +84,10 @@ def test_existing_user_with_signals_returns_200_exact(
 
 
 def test_unknown_user_returns_404(client: FlaskClient) -> None:
+    rid = uuid.uuid4()
     response = client.get(
-        f"/api/users/{uuid.uuid4()}/risk-intelligence"
+        f"/api/users/{rid}/risk-intelligence",
+        headers=_headers(_token_for(client, rid)),
     )
 
     assert response.status_code == 404
@@ -87,7 +104,7 @@ def test_service_mocked_at_route_boundary(client: FlaskClient) -> None:
     user = _create_user(client)
 
     with _patch_service(return_value=[]) as mock_service:
-        client.get(f"/api/users/{user['id']}/risk-intelligence")
+        client.get(f"/api/users/{user['id']}/risk-intelligence", headers=_headers(user["_token"]))
 
     mock_service.assert_called_once()
 
@@ -96,7 +113,7 @@ def test_correct_user_id_passed_to_service(client: FlaskClient) -> None:
     user = _create_user(client)
 
     with _patch_service(return_value=[]) as mock_service:
-        client.get(f"/api/users/{user['id']}/risk-intelligence")
+        client.get(f"/api/users/{user['id']}/risk-intelligence", headers=_headers(user["_token"]))
 
     args, _ = mock_service.call_args
     assert str(args[0]) == user["id"]
@@ -109,7 +126,8 @@ def test_service_failure_returns_500(client: FlaskClient) -> None:
 
     with _patch_service(side_effect=SQLAlchemyError("boom")):
         response = client.get(
-            f"/api/users/{user['id']}/risk-intelligence"
+            f"/api/users/{user['id']}/risk-intelligence",
+            headers=_headers(user["_token"]),
         )
 
     assert response.status_code == 500
@@ -119,12 +137,14 @@ def test_service_failure_returns_500(client: FlaskClient) -> None:
 def test_user_lookup_failure_returns_500(client: FlaskClient) -> None:
     from sqlalchemy.exc import SQLAlchemyError
 
+    rid = uuid.uuid4()
     with patch(
         "app.routes.m4_risk.db.session.get",
         side_effect=SQLAlchemyError("boom"),
     ):
         response = client.get(
-            f"/api/users/{uuid.uuid4()}/risk-intelligence"
+            f"/api/users/{rid}/risk-intelligence",
+            headers=_headers(_token_for(client, rid)),
         )
 
     assert response.status_code == 500
@@ -136,7 +156,8 @@ def test_response_contains_no_unexpected_fields(client: FlaskClient) -> None:
 
     with _patch_service(return_value=_sample_signals()):
         response = client.get(
-            f"/api/users/{user['id']}/risk-intelligence"
+            f"/api/users/{user['id']}/risk-intelligence",
+            headers=_headers(user["_token"]),
         )
 
     assert response.status_code == 200
@@ -174,8 +195,8 @@ def test_user_isolation_preserved_through_lookup(client: FlaskClient) -> None:
     user_b = _create_user(client, email="iso-b-route@example.com")
 
     with _patch_service(return_value=[]) as mock_service:
-        client.get(f"/api/users/{user_a['id']}/risk-intelligence")
-        client.get(f"/api/users/{user_b['id']}/risk-intelligence")
+        client.get(f"/api/users/{user_a['id']}/risk-intelligence", headers=_headers(user_a["_token"]))
+        client.get(f"/api/users/{user_b['id']}/risk-intelligence", headers=_headers(user_b["_token"]))
 
     assert mock_service.call_count == 2
     first_args, _ = mock_service.call_args_list[0]

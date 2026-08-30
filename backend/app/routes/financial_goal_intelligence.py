@@ -3,12 +3,14 @@
 import uuid
 
 from flask import Blueprint, current_app, request
+from flask_jwt_extended import jwt_required
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..extensions import db
 from ..models import User
 from ..services.financial_goal_intelligence import build_goal_intelligence
 from ..services.openai_provider import AIConfigurationError, AIProviderError
+from ._ownership import require_owner_or
 
 
 financial_goal_intelligence_bp = Blueprint(
@@ -21,7 +23,12 @@ financial_goal_intelligence_bp = Blueprint(
 @financial_goal_intelligence_bp.post(
     "/<uuid:user_id>/financial-goal-intelligence"
 )
+@jwt_required()
 def generate_financial_goal_intelligence(user_id: uuid.UUID):
+    forbidden = require_owner_or(user_id)
+    if forbidden is not None:
+        return forbidden
+
     payload = request.get_json(silent=True)
 
     if not isinstance(payload, dict):

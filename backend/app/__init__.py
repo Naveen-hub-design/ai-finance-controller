@@ -3,7 +3,8 @@
 from flask import Flask
 
 from .config import Config
-from .extensions import db
+from .extensions import db, jwt
+from . import jwt_handlers  # noqa: F401  (registers JWT error handlers)
 from .routes.health import health_bp
 from .routes.users import users_bp
 from .routes.accounts import accounts_bp
@@ -31,6 +32,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     app.json.sort_keys = False
 
     db.init_app(app)
+    jwt.init_app(app)
 
     app.register_blueprint(health_bp)
     app.register_blueprint(users_bp)

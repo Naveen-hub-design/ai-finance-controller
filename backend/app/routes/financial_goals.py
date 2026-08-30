@@ -5,11 +5,14 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, current_app, request
+from flask_jwt_extended import jwt_required
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from ..auth import get_current_user_id
 from ..extensions import db
 from ..models import FinancialGoal, User
+from ._ownership import require_owner_or
 from .users import users_bp
 
 financial_goals_bp = Blueprint(
@@ -46,11 +49,14 @@ def _serialize_goal(goal: FinancialGoal) -> dict:
 
 
 @financial_goals_bp.post("")
+@jwt_required()
 def create_goal():
     payload = request.get_json(silent=True)
 
     if not isinstance(payload, dict):
         return {"error": "request body must be valid JSON"}, 400
+
+    current_user_id = get_current_user_id()
 
     user_id_raw = payload.get("user_id")
     name = payload.get("name")
@@ -59,10 +65,15 @@ def create_goal():
     target_date_raw = payload.get("target_date")
     status = payload.get("status", "active")
 
-    try:
-        user_id = uuid.UUID(str(user_id_raw))
-    except (ValueError, AttributeError, TypeError):
-        return {"error": "user_id must be a valid UUID"}, 400
+    # The authenticated identity is the authoritative owner. A client-supplied
+    # user_id never overrides it; a mismatched one is rejected.
+    if user_id_raw is not None:
+        try:
+            supplied_user_id = uuid.UUID(str(user_id_raw))
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "user_id must be a valid UUID"}, 400
+        if supplied_user_id != current_user_id:
+            return {"error": "forbidden"}, 403
 
     if not isinstance(name, str) or not name.strip():
         return {"error": "name is required"}, 400
@@ -100,13 +111,13 @@ def create_goal():
             return {"error": "target_date must be YYYY-MM-DD"}, 400
 
     try:
-        user = db.session.get(User, user_id)
+        user = db.session.get(User, current_user_id)
 
         if user is None:
             return {"error": "user not found"}, 404
 
         goal = FinancialGoal(
-            user_id=user_id,
+            user_id=current_user_id,
             name=name,
             target_amount=target_amount,
             current_amount=current_amount,
@@ -131,6 +142,7 @@ def create_goal():
 
 
 @financial_goals_bp.get("/<uuid:goal_id>")
+@jwt_required()
 def get_goal(goal_id: uuid.UUID):
     try:
         goal = db.session.get(FinancialGoal, goal_id)
@@ -141,10 +153,15 @@ def get_goal(goal_id: uuid.UUID):
     if goal is None:
         return {"error": "financial goal not found"}, 404
 
+    forbidden = require_owner_or(goal.user_id)
+    if forbidden is not None:
+        return forbidden
+
     return _serialize_goal(goal), 200
 
 
 @financial_goals_bp.put("/<uuid:goal_id>")
+@jwt_required()
 def update_goal(goal_id: uuid.UUID):
     payload = request.get_json(silent=True)
 
@@ -159,6 +176,14 @@ def update_goal(goal_id: uuid.UUID):
 
     if goal is None:
         return {"error": "financial goal not found"}, 404
+
+    forbidden = require_owner_or(goal.user_id)
+    if forbidden is not None:
+        return forbidden
+
+    # Ownership cannot be transferred via the request body.
+    if "user_id" in payload:
+        return {"error": "forbidden"}, 403
 
     if "name" in payload:
         name = payload["name"]
@@ -213,6 +238,7 @@ def update_goal(goal_id: uuid.UUID):
 
 
 @financial_goals_bp.delete("/<uuid:goal_id>")
+@jwt_required()
 def delete_goal(goal_id: uuid.UUID):
     try:
         goal = db.session.get(FinancialGoal, goal_id)
@@ -222,6 +248,10 @@ def delete_goal(goal_id: uuid.UUID):
 
     if goal is None:
         return {"error": "financial goal not found"}, 404
+
+    forbidden = require_owner_or(goal.user_id)
+    if forbidden is not None:
+        return forbidden
 
     try:
         db.session.delete(goal)
@@ -235,8 +265,13 @@ def delete_goal(goal_id: uuid.UUID):
 
 
 @users_bp.get("/<uuid:user_id>/financial-goals")
+@jwt_required()
 def list_goals(user_id: uuid.UUID):
-    """List all financial goals belonging to a user."""
+    """List all financial goals belonging to a user (owner only)."""
+    forbidden = require_owner_or(user_id)
+    if forbidden is not None:
+        return forbidden
+
     try:
         user = db.session.get(User, user_id)
     except SQLAlchemyError:

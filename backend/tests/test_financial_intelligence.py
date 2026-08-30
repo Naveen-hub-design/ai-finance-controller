@@ -10,20 +10,34 @@ from app.services.financial_intelligence import build_financial_facts
 from app.models import Budget, Category, FinancialGoal
 
 
-def _create_user(client: FlaskClient) -> dict:
-    response = client.post(
+def _create_user(
+    client: FlaskClient, email: str = "intelligence@example.com"
+) -> tuple[dict, str]:
+    created = client.post(
         "/api/users",
         json={
-            "email": "intelligence@example.com",
+            "email": email,
             "name": "Intelligence User",
+            "password": "test-password-123",
         },
     )
-    assert response.status_code == 201, response.get_json()
-    return response.get_json()
+    assert created.status_code == 201, created.get_json()
+    login = client.post(
+        "/api/users/login",
+        json={"email": email, "password": "test-password-123"},
+    )
+    assert login.status_code == 200, login.get_json()
+    body = login.get_json()
+    return body["user"], body["access_token"]
+
+
+def _headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _create_account(
     client: FlaskClient,
+    token: str,
     user_id: str,
     name: str,
     balance: str,
@@ -37,6 +51,7 @@ def _create_account(
             "currency": "INR",
             "current_balance": balance,
         },
+        headers=_headers(token),
     )
     assert response.status_code == 201, response.get_json()
     return response.get_json()
@@ -44,6 +59,7 @@ def _create_account(
 
 def _create_transaction(
     client: FlaskClient,
+    token: str,
     account_id: str,
     amount: str,
     transaction_type: str,
@@ -62,6 +78,7 @@ def _create_transaction(
     response = client.post(
         "/api/transactions",
         json=payload,
+        headers=_headers(token),
     )
 
     assert response.status_code == 201, response.get_json()
@@ -69,7 +86,7 @@ def _create_transaction(
 
 
 def test_empty_user_returns_zero_facts(client: FlaskClient) -> None:
-    user = _create_user(client)
+    user, _ = _create_user(client)
 
     facts = build_financial_facts(user["id"])
 
@@ -88,10 +105,11 @@ def test_empty_user_returns_zero_facts(client: FlaskClient) -> None:
 def test_calculates_income_expenses_and_balance(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
+    user, token = _create_user(client)
 
     account = _create_account(
         client,
+        token,
         user["id"],
         "Main Bank",
         "50000",
@@ -99,6 +117,7 @@ def test_calculates_income_expenses_and_balance(
 
     _create_transaction(
         client,
+        token,
         account["id"],
         "5000",
         "income",
@@ -106,6 +125,7 @@ def test_calculates_income_expenses_and_balance(
 
     _create_transaction(
         client,
+        token,
         account["id"],
         "1250",
         "expense",
@@ -125,10 +145,11 @@ def test_calculates_income_expenses_and_balance(
 def test_calculates_spending_by_category(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
+    user, token = _create_user(client)
 
     account = _create_account(
         client,
+        token,
         user["id"],
         "Main Bank",
         "20000",
@@ -141,6 +162,7 @@ def test_calculates_spending_by_category(
             "name": "Groceries",
             "category_type": "expense",
         },
+        headers=_headers(token),
     )
 
     assert groceries_response.status_code == 201
@@ -154,6 +176,7 @@ def test_calculates_spending_by_category(
             "name": "Food",
             "category_type": "expense",
         },
+        headers=_headers(token),
     )
 
     assert food_response.status_code == 201
@@ -162,6 +185,7 @@ def test_calculates_spending_by_category(
 
     _create_transaction(
         client,
+        token,
         account["id"],
         "3000",
         "expense",
@@ -170,6 +194,7 @@ def test_calculates_spending_by_category(
 
     _create_transaction(
         client,
+        token,
         account["id"],
         "1500",
         "expense",
@@ -178,6 +203,7 @@ def test_calculates_spending_by_category(
 
     _create_transaction(
         client,
+        token,
         account["id"],
         "2000",
         "expense",
@@ -201,7 +227,7 @@ def test_calculates_spending_by_category(
 def test_includes_user_budgets(
     client: FlaskClient,
 ) -> None:
-    user = _create_user(client)
+    user, token = _create_user(client)
 
     category_response = client.post(
         "/api/categories",
@@ -210,6 +236,7 @@ def test_includes_user_budgets(
             "name": "Groceries",
             "category_type": "expense",
         },
+        headers=_headers(token),
     )
 
     assert category_response.status_code == 201
@@ -226,6 +253,7 @@ def test_includes_user_budgets(
             "start_date": "2026-08-01",
             "end_date": "2026-08-31",
         },
+        headers=_headers(token),
     )
 
     assert response.status_code == 201
@@ -242,7 +270,7 @@ def test_calculates_financial_goal_progress(
     client: FlaskClient,
     app,
 ) -> None:
-    user = _create_user(client)
+    user, _ = _create_user(client)
 
     with app.app_context():
         # Direct ORM construction requires typed UUIDs (the HTTP layer
@@ -275,22 +303,31 @@ def test_calculates_financial_goal_progress(
 def test_financial_facts_are_isolated_by_user(
     client: FlaskClient,
 ) -> None:
-    user_one = _create_user(client)
+    user_one, token_one = _create_user(client)
 
     user_two_response = client.post(
         "/api/users",
         json={
             "email": "other@example.com",
             "name": "Other User",
+            "password": "test-password-123",
         },
     )
 
     assert user_two_response.status_code == 201
 
-    user_two = user_two_response.get_json()
+    login_two = client.post(
+        "/api/users/login",
+        json={"email": "other@example.com", "password": "test-password-123"},
+    )
+    assert login_two.status_code == 200, login_two.get_json()
+    user_two_body = login_two.get_json()
+    user_two = user_two_body["user"]
+    token_two = user_two_body["access_token"]
 
     account_one = _create_account(
         client,
+        token_one,
         user_one["id"],
         "User One Bank",
         "10000",
@@ -298,6 +335,7 @@ def test_financial_facts_are_isolated_by_user(
 
     account_two = _create_account(
         client,
+        token_two,
         user_two["id"],
         "User Two Bank",
         "90000",
@@ -305,6 +343,7 @@ def test_financial_facts_are_isolated_by_user(
 
     _create_transaction(
         client,
+        token_one,
         account_one["id"],
         "5000",
         "income",
@@ -312,6 +351,7 @@ def test_financial_facts_are_isolated_by_user(
 
     _create_transaction(
         client,
+        token_two,
         account_two["id"],
         "50000",
         "income",

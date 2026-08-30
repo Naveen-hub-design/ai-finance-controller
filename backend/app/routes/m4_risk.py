@@ -11,11 +11,13 @@ transaction records directly.
 import uuid
 
 from flask import Blueprint, current_app
+from flask_jwt_extended import jwt_required
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..extensions import db
 from ..models import User
 from ..services.m4.anomaly_detection import run_risk_intelligence
+from ._ownership import require_owner_or
 
 
 m4_risk_bp = Blueprint(
@@ -26,7 +28,12 @@ m4_risk_bp = Blueprint(
 
 
 @m4_risk_bp.get("/<uuid:user_id>/risk-intelligence")
+@jwt_required()
 def get_risk_intelligence(user_id: uuid.UUID):
+    forbidden = require_owner_or(user_id)
+    if forbidden is not None:
+        return forbidden
+
     try:
         user = db.session.get(User, user_id)
     except SQLAlchemyError:
