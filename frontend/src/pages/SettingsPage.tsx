@@ -5,11 +5,13 @@ import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { SectionHeading } from "../components/ui/SectionHeading";
+import { useAuth } from "../context/AuthContext";
 
 const selectClass =
   "h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-foreground transition-colors duration-150 focus:border-accent-500 focus:outline-none";
 
 export default function SettingsPage() {
+  const { user } = useAuth();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [currency, setCurrency] = useState("INR");
@@ -138,7 +140,9 @@ export default function SettingsPage() {
             </div>
             <div className="flex items-center justify-between py-3">
               <dt className="text-sm text-muted">Authentication</dt>
-              <dd className="text-sm text-muted-faint">Planned (M7)</dd>
+              <dd className="text-sm font-medium text-foreground">
+                {user?.email ?? "Signed in"}
+              </dd>
             </div>
           </dl>
         </Card>

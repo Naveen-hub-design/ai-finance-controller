@@ -6,6 +6,16 @@ export interface User {
   updated_at: string;
 }
 
+export interface LoginRequest {
+  email: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  user: User;
+  access_token: string;
+}
+
 export type AccountType =
   | "bank"
   | "cash"

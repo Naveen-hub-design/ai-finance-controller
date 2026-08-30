@@ -1,6 +1,6 @@
 import { forwardRef, type KeyboardEvent } from "react";
-import { NavLink } from "react-router-dom";
-import { Sparkles, X } from "lucide-react";
+import { NavLink, useNavigate } from "react-router-dom";
+import { Sparkles, X, LogOut } from "lucide-react";
 import {
   aiNavigation,
   footerNavigation,
@@ -8,6 +8,7 @@ import {
 } from "../../lib/navigation";
 import { cn } from "../../lib/cn";
 import { useScrollLock } from "../../lib/useScrollLock";
+import { useAuth } from "../../context/AuthContext";
 import type { NavItem } from "../../types/navigation";
 
 interface SidebarProps {
@@ -59,7 +60,15 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(
   ({ open, onClose }, ref) => {
     useScrollLock(open);
 
+    const { user, logout } = useAuth();
+    const navigate = useNavigate();
+
     const close = () => onClose();
+
+    const handleSignOut = () => {
+      logout();
+      navigate("/login", { replace: true });
+    };
 
     const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
       if (event.key === "Escape") {
@@ -158,13 +167,25 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(
           <div className="border-t border-border px-5 py-4">
             <div className="flex items-center gap-2.5">
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-surface-raised text-muted">
-                A
+                {user?.full_name?.charAt(0) ?? user?.email?.charAt(0) ?? "A"}
               </div>
               <div className="leading-tight">
-                <div className="text-xs font-medium text-foreground">Demo User</div>
-                <div className="text-[11px] text-muted-faint">Signed in · demo</div>
+                <div className="text-xs font-medium text-foreground">
+                  {user?.full_name || user?.email || "Signed in"}
+                </div>
+                <div className="text-[11px] text-muted-faint">
+                  {user?.email ?? "Account"}
+                </div>
               </div>
             </div>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="mt-3 inline-flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-muted transition-colors duration-150 hover:bg-surface-raised hover:text-foreground"
+            >
+              <LogOut className="h-4 w-4" aria-hidden="true" />
+              Sign out
+            </button>
           </div>
         </aside>
       </>

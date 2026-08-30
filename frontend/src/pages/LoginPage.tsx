@@ -1,10 +1,41 @@
-import { Link } from "react-router-dom";
-import { Sparkles, ArrowRight } from "lucide-react";
+import { useState, type FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
+import { Sparkles, ArrowRight, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Card, CardHeader, CardTitle } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
+import { useAuth } from "../context/AuthContext";
+import type { ApiError } from "../lib/api";
 
 export default function LoginPage() {
+  const { login } = useAuth();
+  const navigate = useNavigate();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (submitting) return;
+
+    setError(null);
+    setSubmitting(true);
+
+    try {
+      await login(email.trim(), password);
+      navigate("/dashboard", { replace: true });
+    } catch (err) {
+      setError(
+        (err as ApiError).message ||
+          "Unable to sign in. Please check your details and try again."
+      );
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
@@ -22,10 +53,7 @@ export default function LoginPage() {
             <CardTitle>Sign in</CardTitle>
           </CardHeader>
 
-          <form
-            className="space-y-4"
-            onSubmit={(event) => event.preventDefault()}
-          >
+          <form className="space-y-4" onSubmit={handleSubmit}>
             <div>
               <label
                 htmlFor="email"
@@ -33,7 +61,16 @@ export default function LoginPage() {
               >
                 Email
               </label>
-              <Input id="email" type="email" placeholder="you@example.com" />
+              <Input
+                id="email"
+                type="email"
+                required
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={submitting}
+              />
             </div>
 
             <div>
@@ -46,26 +83,45 @@ export default function LoginPage() {
               <Input
                 id="password"
                 type="password"
+                required
+                autoComplete="current-password"
                 placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={submitting}
               />
             </div>
 
-            <Button type="submit" className="w-full">
-              Continue
-              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+            {error && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-lg border border-danger-500/25 bg-danger-500/5 px-3 py-2.5 text-sm text-danger-400"
+              >
+                <AlertCircle
+                  className="mt-0.5 h-4 w-4 shrink-0"
+                  aria-hidden="true"
+                />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <Button type="submit" className="w-full" disabled={submitting}>
+              {submitting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  Signing in…
+                </>
+              ) : (
+                <>
+                  Continue
+                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                </>
+              )}
             </Button>
           </form>
 
           <p className="mt-4 text-xs text-muted-faint">
-            Authentication is planned for a later milestone. For now you can
-            explore the{" "}
-            <Link
-              to="/dashboard"
-              className="text-accent-400 underline-offset-2 hover:underline"
-            >
-              dashboard
-            </Link>
-            .
+            Sign in with your account to manage your finances.
           </p>
         </Card>
       </div>

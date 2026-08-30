@@ -1,5 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout } from "../layouts/AppLayout";
+import { ProtectedRoute } from "./ProtectedRoute";
+import { PublicOnlyRoute } from "./PublicOnlyRoute";
 import DashboardPage from "../pages/DashboardPage";
 import AccountsPage from "../pages/AccountsPage";
 import TransactionsPage from "../pages/TransactionsPage";
@@ -20,27 +22,31 @@ export function AppRouter() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/login" element={<LoginPage />} />
+        <Route element={<PublicOnlyRoute />}>
+          <Route path="/login" element={<LoginPage />} />
+        </Route>
 
-        <Route element={<AppLayout />}>
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/accounts" element={<AccountsPage />} />
-          <Route path="/transactions" element={<TransactionsPage />} />
-          <Route
-            path="/transactions/:id"
-            element={<TransactionDetailPage />}
-          />
-          <Route path="/categories" element={<CategoriesPage />} />
-          <Route path="/budgets" element={<BudgetsPage />} />
-          <Route path="/goals" element={<GoalsPage />} />
-          <Route path="/ai-controller" element={<AiControllerPage />} />
-          <Route path="/ai-analysis" element={<AiAnalysisPage />} />
-          <Route path="/risks" element={<RisksPage />} />
-          <Route path="/recommendations" element={<RecommendationsPage />} />
-          <Route path="/audit" element={<AuditPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="*" element={<NotFoundPage />} />
+        <Route element={<ProtectedRoute />}>
+          <Route element={<AppLayout />}>
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/accounts" element={<AccountsPage />} />
+            <Route path="/transactions" element={<TransactionsPage />} />
+            <Route
+              path="/transactions/:id"
+              element={<TransactionDetailPage />}
+            />
+            <Route path="/categories" element={<CategoriesPage />} />
+            <Route path="/budgets" element={<BudgetsPage />} />
+            <Route path="/goals" element={<GoalsPage />} />
+            <Route path="/ai-controller" element={<AiControllerPage />} />
+            <Route path="/ai-analysis" element={<AiAnalysisPage />} />
+            <Route path="/risks" element={<RisksPage />} />
+            <Route path="/recommendations" element={<RecommendationsPage />} />
+            <Route path="/audit" element={<AuditPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="*" element={<NotFoundPage />} />
+          </Route>
         </Route>
       </Routes>
     </BrowserRouter>
