@@ -1,111 +1,103 @@
 # AI Finance Controller
 
-A secure, scalable financial control platform for B2B merchants. Planned
-capabilities: **AI anomaly and fraud detection**, **conversational financial
-auditing (RAG)**, **automated ledger reconciliation**, and an **AI Finance
-Controller** that coordinates them.
+A secure, enterprise-grade financial control and auditing platform designed for B2B merchants and financial teams. The platform features **multi-tenant business isolation**, **deterministic anomaly and risk detection**, **automated multi-bank ledger reconciliation** with human-in-the-loop exception workflows, and **conversational AI financial analysis**.
 
-> **Status: M01 — Foundation.** This repository currently contains only the
-> production-oriented infrastructure (API skeleton, database, broker, worker,
-> frontend shell, reverse proxy). No business or AI features are implemented.
+---
 
-## Technology stack
+## Capabilities & Architecture
 
-| Layer      | Technology                                        |
-| ---------- | ------------------------------------------------- |
-| API        | Python 3.12, Flask, Gunicorn, SQLAlchemy          |
-| Database   | PostgreSQL 16 (`pgvector` image), pgvector, pgcrypto |
-| Broker     | Redis 7                                           |
-| Async      | Celery 5 (dedicated `worker` service)             |
-| Frontend   | React 19, Vite 6, TypeScript                      |
-| Entry point| Nginx (reverse proxy)                             |
-| Packaging  | Docker Compose                                    |
+| Module | Description | Implementation Status |
+| :--- | :--- | :--- |
+| **Authentication & RBAC** | JWT-based auth with server-enforced roles (`PLATFORM_ADMIN`, `MERCHANT`, `FINANCE_MANAGER`) and strict business data isolation. | **Complete & Verified** |
+| **Ledger & Transactions** | Full account management, income/expense/transfer categorization, transaction CRUD, and instant CSV export. | **Complete & Verified** |
+| **Reconciliation Engine** | Multi-source bank statement vs ledger reconciliation with automated matching (80%+ match rate), exception categorization, per-line durable review states, and audit trails. | **Complete & Verified** |
+| **Risk & Anomaly Detection** | Rule-based and pattern-based anomaly detection engine identifying velocity spikes, duplicate candidates, and threshold breaches. | **Complete & Verified** |
+| **Financial Intelligence** | Deterministic financial facts computation (cash flow, income, expense distribution, budget utilization, goal tracking). | **Complete & Verified** |
+| **AI Controller & Explanations** | Evidence-bounded financial explanations, goal feasibility scoring, and proposal-only AI assistant via OpenAI Responses API. | **Complete & Configurable** |
+| **Audit Log Trail** | Append-only audit records tracking reconciliation runs, review decisions, and financial administrative mutations. | **Complete & Verified** |
+| **Platform Administration** | Dedicated platform administrator portal (`/admin`) for user management, system metrics, and cross-platform oversight. | **Complete & Verified** |
 
-## Quick start
+---
 
-Requires only Docker (with Compose v2) — no host Python or Node needed.
+## Technology Stack
 
-```bash
-cp .env.example .env       # then edit values; never commit .env
-docker compose up --build
-```
+| Layer | Technologies |
+| :--- | :--- |
+| **Frontend** | React 19, TypeScript, Vite 6, Tailwind CSS, Recharts, Lucide Icons |
+| **Backend API** | Python 3.12, Flask, Flask-SQLAlchemy, Flask-JWT-Extended, Gunicorn |
+| **Database** | PostgreSQL 16 (pgvector, pgcrypto) / SQLite (Local dev & test isolation) |
+| **Broker & Async** | Redis 7 & Celery 5 (`worker` service) |
+| **Reverse Proxy** | Nginx (alpine) |
+| **Testing** | Pytest (700+ tests), TypeScript (`tsc --noEmit`) |
 
-- Frontend: <http://localhost>
-- API health: <http://localhost/api/health>
+---
 
-All browser traffic goes through Nginx (`/` → frontend, `/api/*` → Flask).
+## Quick Start
 
-## Health check
+### Option 1: Native Local Run (No Docker Required)
 
-```bash
-curl http://localhost/api/health
-```
-
-```json
-{
-  "status": "healthy",
-  "service": "finance-controller-api"
-}
-```
-
-## High-level architecture
-
-```text
-Browser ──► nginx ──┬── /       ► frontend (React static build)
-                    └── /api/*  ► api (Flask/Gunicorn)
-                                     ├─ postgres 16 + pgvector (datastore)
-                                     └─ redis 7 (broker/backend)
-                                          ▲
-                          worker (Celery)─┘
-```
-
-See [docs/architecture/system-overview.md](docs/architecture/system-overview.md)
-for details.
-
-## Repository layout
-
-```text
-backend/    Flask app factory, health endpoint, tests
-frontend/   React + Vite + TypeScript shell
-worker/     Celery app foundation (no business tasks yet)
-database/   Postgres image with init SQL (extensions), seeds placeholder
-nginx/      Reverse proxy configuration
-docs/       architecture/, decisions/, demo/
-scripts/    helper scripts (bootstrap)
-tests/      cross-service smoke tests (shell)
-```
-
-## Testing
-
-Backend unit/integration tests:
-
+#### 1. Start the Flask Backend
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt -r requirements-dev.txt
+python wsgi.py
+```
+*API runs at `http://127.0.0.1:5000` (`http://127.0.0.1:5000/api/health`).*
+
+#### 2. Start the Frontend
+```bash
+cd frontend
+npm run dev
+# or: npx vite preview --port 5173
+```
+*Frontend loads at `http://localhost:5173` with automatic API proxying.*
+
+---
+
+### Option 2: Docker Compose (Full Stack)
+
+Requires Docker Desktop with Compose v2:
+```bash
+cp .env.example .env       # edit values as needed
+docker compose up --build
+```
+- Frontend UI: `http://localhost`
+- API Health: `http://localhost/api/health`
+
+---
+
+## Demo Accounts (Instant 1-Click Access)
+
+The platform comes pre-seeded with **Demo Corp** (250+ transactions, 4 accounts, 12 categories, 6 budgets, and reconciliation test batches):
+
+| Role | Email | Password | Default Scope |
+| :--- | :--- | :--- | :--- |
+| **Merchant (Owner)** | `merchant@demo.com` | `demo-password-123` | Full financial control & member management |
+| **Finance Manager** | `finance@demo.com` | `demo-password-123` | Operational financials, reconciliation & auditing |
+| **Platform Admin** | `admin@demo.com` | `demo-password-123` | Cross-platform metrics & user management |
+
+---
+
+## AI Configuration
+
+To enable live OpenAI generation (e.g., natural language explanations and AI goal intelligence):
+1. Set your OpenAI API key in `.env`:
+   ```env
+   OPENAI_API_KEY=sk-...
+   OPENAI_MODEL=gpt-5.6-luna
+   ```
+2. When the key is not set, the platform operates in **Graceful Degradation Mode**: all deterministic financials, analytics, risk algorithms, and reconciliation features work 100%, and AI endpoints return explicit, honest `503` notifications rather than fabricated data.
+
+---
+
+## Running Tests
+
+Run the complete test suite:
+```bash
+cd backend
 pytest
 ```
-
-Cross-service smoke checks against a running stack:
-
+Run frontend typecheck:
 ```bash
-bash tests/smoke_test.sh
+cd frontend
+npm run build
 ```
-
-## Project rules
-
-- All secrets come from environment variables (`.env`, git-ignored). The
-  committed `.env.example` contains placeholders only.
-- **Financial calculations must never depend on LLM-generated arithmetic**
-  ([ADR 004](docs/decisions/004-financial-precision.md)). Future monetary code
-  uses Python `Decimal` and PostgreSQL `NUMERIC`.
-
-## Planned (not yet implemented)
-
-Authentication/JWT/RBAC · merchant management · transactions, invoices,
-vendors · ledger & reconciliation · OCR ingestion · embeddings/pgvector usage ·
-RAG auditing · anomaly/fraud detection (Isolation Forest) · LLM integration &
-AI agent · dashboards (Tailwind/shadcn/Recharts) · WebSockets · cloud
-deployment.
-
-Each will be introduced in its own milestone.

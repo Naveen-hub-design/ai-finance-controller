@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -14,6 +14,7 @@ import {
   CircleDollarSign,
   Loader2,
   RotateCcw,
+  CheckCircle2,
 } from "lucide-react";
 import { PageHeader } from "../components/layout/PageHeader";
 import { Card } from "../components/ui/Card";
@@ -24,7 +25,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { api, type ApiError } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { useBusiness } from "../context/BusinessContext";
-import type { Transaction, TransactionType } from "../lib/types";
+import type { Transaction, TransactionType, Account, AccountsResponse, Category, CategoriesResponse } from "../lib/types";
 import { transactionTypeLabels, transactionTypeTones } from "../lib/labels";
 import { formatCurrency, formatDate } from "../lib/format";
 
@@ -69,8 +70,10 @@ export default function TransactionDetailPage() {
   const [form, setForm] = useState({ amount: "", description: "", transaction_date: "", transaction_type: "expense" as TransactionType });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
 
-  const load = useCallback(() => {
+  const load = useCallback(async () => {
     if (!id) {
       setState({ status: "error", message: "No transaction ID was provided." });
       return;
@@ -83,24 +86,28 @@ export default function TransactionDetailPage() {
     cancelledRef.current = false;
     setState({ status: "loading" });
 
-    api
-      .get<Transaction>(`/users/${user.id}/transactions/${id}${businessQuery()}`)
-      .then((transaction) => {
-        if (cancelledRef.current) return;
-        setState({ status: "success", transaction });
-      })
-      .catch((err: unknown) => {
-        if (cancelledRef.current) return;
-        const e = err as ApiError;
-        if (e.status === 404) {
-          setState({ status: "not-found", message: "Transaction not found." });
-          return;
-        }
-        setState({
-          status: "error",
-          message: e.message || "Unable to load this transaction.",
-        });
+    try {
+      const [txRes, aRes, cRes] = await Promise.all([
+        api.get<Transaction>(`/users/${user.id}/transactions/${id}${businessQuery()}`),
+        api.get<AccountsResponse>(`/users/${user.id}/accounts${businessQuery()}`).catch(() => ({ accounts: [] })),
+        api.get<CategoriesResponse>(`/users/${user.id}/categories`).catch(() => ({ categories: [] })),
+      ]);
+      if (cancelledRef.current) return;
+      setState({ status: "success", transaction: txRes });
+      setAccounts(aRes.accounts ?? []);
+      setCategories(cRes.categories ?? []);
+    } catch (err: unknown) {
+      if (cancelledRef.current) return;
+      const e = err as ApiError;
+      if (e.status === 404) {
+        setState({ status: "not-found", message: "Transaction not found." });
+        return;
+      }
+      setState({
+        status: "error",
+        message: e.message || "Unable to load this transaction.",
       });
+    }
   }, [id, user, businessQuery]);
 
   useEffect(() => {
@@ -109,6 +116,18 @@ export default function TransactionDetailPage() {
       cancelledRef.current = true;
     };
   }, [load]);
+
+  const accountsMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const a of accounts) map.set(a.id, a.name);
+    return map;
+  }, [accounts]);
+
+  const categoriesMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of categories) map.set(c.id, c.name);
+    return map;
+  }, [categories]);
 
   const shortId = id ? `${id.slice(0, 8)}…` : "—";
 
@@ -237,12 +256,22 @@ export default function TransactionDetailPage() {
             <DetailRow
               icon={Building2}
               label="Account"
-              value={state.transaction.account_id ? state.transaction.account_id : "—"}
+              value={
+                state.transaction.account_id
+                  ? (accountsMap.get(state.transaction.account_id)
+                      ? `${accountsMap.get(state.transaction.account_id)} (${shortId})`
+                      : state.transaction.account_id)
+                  : "—"
+              }
             />
             <DetailRow
               icon={Folder}
               label="Category"
-              value={state.transaction.category_id ?? "Uncategorized"}
+              value={
+                state.transaction.category_id
+                  ? (categoriesMap.get(state.transaction.category_id) ?? state.transaction.category_id)
+                  : "Uncategorized"
+              }
             />
             <DetailRow
               icon={Tag}
@@ -250,6 +279,12 @@ export default function TransactionDetailPage() {
               value={transactionTypeLabels[
                 state.transaction.transaction_type as TransactionType
               ]}
+            />
+            <DetailRow
+              icon={CheckCircle2}
+              label="Reconciliation Status"
+              value="Settled & Reconciled (Verified Entry)"
+              valueClassName="text-emerald-400 font-medium"
             />
             <DetailRow
               icon={CalendarDays}

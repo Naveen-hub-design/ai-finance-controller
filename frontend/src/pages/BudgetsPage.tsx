@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PiggyBank, Plus, CalendarRange, Gauge, Info, RefreshCw, Loader2, RotateCcw, Folder, Pencil, Trash2, X } from "lucide-react";
 import { PageHeader } from "../components/layout/PageHeader";
 import { Card } from "../components/ui/Card";
@@ -30,21 +30,40 @@ function statusFromProgress(progress: number | null): BudgetStatusKey { return b
 const progressTone: Record<BudgetStatusKey, "accent" | "success" | "warning" | "danger"> = { on_track: "success", near_limit: "warning", over: "danger", upcoming: "accent" };
 function shortId(id: string): string { return id.length > 8 ? `${id.slice(0, 8)}…` : id; }
 
-function BudgetCard({ budget, onEdit, onDelete }: { budget: Budget; onEdit: () => void; onDelete: () => void; }) {
+function BudgetCard({
+  budget,
+  categoryName,
+  onEdit,
+  onDelete,
+}: {
+  budget: Budget;
+  categoryName?: string;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   const amount = toNumberSafely(budget.amount) ?? 0;
   const spent = toNumberSafely(budget.spent);
   const remaining = toNumberSafely(budget.remaining);
   const progress = toNumberSafely(budget.progress_percent);
   const status = statusFromProgress(progress);
   const hasSpendingData = spent !== null && remaining !== null && progress !== null;
+  const displayCategory = categoryName || (budget.category_id ? `Category ${shortId(budget.category_id)}` : "All Categories");
+
   return (
     <Card className="flex h-full flex-col">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface-raised text-accent-400"><PiggyBank className="h-5 w-5" aria-hidden="true" /></div>
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface-raised text-accent-400">
+            <PiggyBank className="h-5 w-5" aria-hidden="true" />
+          </div>
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-medium text-foreground">{budget.category_id ? `Category ${shortId(budget.category_id)}` : "All categories"}</h3>
-            <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-faint"><Folder className="h-3 w-3" aria-hidden="true" />{budgetPeriodLabels[budget.period]}</p>
+            <h3 className="truncate text-sm font-semibold text-foreground">
+              {displayCategory}
+            </h3>
+            <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-faint">
+              <Folder className="h-3 w-3" aria-hidden="true" />
+              {budgetPeriodLabels[budget.period]}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -85,9 +104,13 @@ export default function BudgetsPage() {
     cancelledRef.current = false;
     setState({ status: "loading" });
     try {
-      const res = await api.get<BudgetsResponse>(`/users/${user.id}/budgets${businessQuery()}`);
+      const [res, catRes] = await Promise.all([
+        api.get<BudgetsResponse>(`/users/${user.id}/budgets${businessQuery()}`),
+        api.get<CategoriesResponse>(`/users/${user.id}/categories`).catch(() => ({ categories: [] })),
+      ]);
       if (cancelledRef.current) return;
       setState({ status: "success", budgets: res.budgets ?? [] });
+      setCategories(catRes.categories ?? []);
     } catch (err: unknown) {
       if (cancelledRef.current) return;
       const e = err as ApiError;
@@ -99,15 +122,25 @@ export default function BudgetsPage() {
     if (!user) return;
     setRefreshing(true);
     try {
-      const res = await api.get<BudgetsResponse>(`/users/${user.id}/budgets${businessQuery()}`);
+      const [res, catRes] = await Promise.all([
+        api.get<BudgetsResponse>(`/users/${user.id}/budgets${businessQuery()}`),
+        api.get<CategoriesResponse>(`/users/${user.id}/categories`).catch(() => ({ categories: [] })),
+      ]);
       if (cancelledRef.current) return;
       setState({ status: "success", budgets: res.budgets ?? [] });
+      setCategories(catRes.categories ?? []);
     } catch (err: unknown) {
       if (cancelledRef.current) return;
       const e = err as ApiError;
       setState({ status: "error", message: e.message || "Unable to refresh your budgets." });
     } finally { if (!cancelledRef.current) setRefreshing(false); }
   }, [user, businessQuery]);
+
+  const categoriesMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of categories) map.set(c.id, c.name);
+    return map;
+  }, [categories]);
 
   const loadCats = async () => {
     if (!user) return;
@@ -180,7 +213,7 @@ export default function BudgetsPage() {
         {state.status === "loading" && <Card className="mt-4 flex items-center gap-3 p-6"><Loader2 className="h-5 w-5 animate-spin text-accent-400" aria-hidden="true" /><p className="text-sm text-muted">Loading your budgets…</p></Card>}
         {state.status === "error" && <div className="mt-4"><EmptyState icon={PiggyBank} title="Could not load budgets" description={state.message} action={<Button variant="secondary" size="sm" onClick={load}><RotateCcw className="h-4 w-4" aria-hidden="true" />Retry</Button>} /></div>}
         {state.status === "success" && budgets.length === 0 && <Card className="mt-4"><EmptyState icon={PiggyBank} title="No budgets yet" description="Create your first budget to get started." action={<Button variant="secondary" size="sm" onClick={openCreate}><Plus className="h-4 w-4" aria-hidden="true" />Create your first budget</Button>} /></Card>}
-        {state.status === "success" && budgets.length > 0 && <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">{budgets.map((b) => <BudgetCard key={b.id} budget={b} onEdit={() => openEdit(b)} onDelete={() => handleDelete(b)} />)}</div>}
+        {state.status === "success" && budgets.length > 0 && <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">{budgets.map((b) => <BudgetCard key={b.id} budget={b} categoryName={b.category_id ? categoriesMap.get(b.category_id) : undefined} onEdit={() => openEdit(b)} onDelete={() => handleDelete(b)} />)}</div>}
       </section>
 
       <section aria-labelledby="budget-periods-heading">

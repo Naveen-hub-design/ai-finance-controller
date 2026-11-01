@@ -170,7 +170,7 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(
                 <div className="text-sm font-semibold tracking-tight text-foreground">
                   AI Finance Controller
                 </div>
-                <div className="text-[11px] text-muted-faint">Intelligent budgeting</div>
+                <div className="text-[11px] text-muted-faint font-medium">Enterprise Financial Controls</div>
               </div>
             </div>
             <button

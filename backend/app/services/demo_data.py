@@ -45,8 +45,8 @@ from ..models import (
 
 # Year covered by the deterministic dataset.
 _YEAR = 2026
-# Month labels (1..6 => January..June).
-_MONTHS = [1, 2, 3, 4, 5, 6]
+# Month labels (1..11 => January..November).
+_MONTHS = list(range(1, 12))
 
 
 def _d(m: int, d: int) -> date:
@@ -69,13 +69,12 @@ def _get_or_create(session, model, *, where, defaults):
 
 
 def seed_demo_business(session=None) -> dict:
-    """Populate the demo business with a realistic deterministic dataset.
+    """Populate the enterprise business with a realistic deterministic dataset.
 
-    Locates the demo merchant by email (``merchant@demo.com``) and the demo
-    business strictly through that merchant's OWNER membership (``Demo Corp``,
-    name scoped to the merchant that owns it -- never a global name lookup),
-    then adds any missing categories, accounts, transactions, budgets, and
-    goals. Safe to call repeatedly (idempotent).
+    Locates the merchant by email (``merchant@demo.com``) and the enterprise
+    business strictly through that merchant's OWNER membership (``Apex Global Technologies``
+    or ``Demo Corp``), then adds any missing categories, accounts, transactions, budgets,
+    and goals. Safe to call repeatedly (idempotent).
 
     Returns a dict reporting how many of each row kind were newly created.
     """
@@ -91,7 +90,7 @@ def seed_demo_business(session=None) -> dict:
         .where(
             BusinessMember.user_id == merchant.id,
             BusinessMember.role == "OWNER",
-            Business.name == "Demo Corp",
+            Business.name.in_(["Apex Global Technologies", "Demo Corp"]),
         )
         .order_by(Business.created_at.asc())
         .limit(1)
@@ -177,15 +176,14 @@ def seed_demo_business(session=None) -> dict:
     session.flush()
 
     # ------------------------------------------------------------ transactions
-    # Idempotency guard: skip only when the merchant's business has no
-    # transactions dated within the seed year (Jan-Jun).
+    # Idempotency guard: check whether transactions have already been seeded.
     seeded_txn = session.scalar(
         select(Transaction)
         .join(Account, Account.id == Transaction.account_id)
         .where(
             Account.business_id == business.id,
             Transaction.transaction_date >= date(_YEAR, 1, 1),
-            Transaction.transaction_date <= date(_YEAR, 6, 30),
+            Transaction.transaction_date <= date(_YEAR, 11, 30),
         )
         .limit(1)
     )
@@ -206,43 +204,45 @@ def seed_demo_business(session=None) -> dict:
         counts["transactions"] = len(batch)
 
     # ---------------------------------------------------------------- budgets
-    # Monthly budgets over June 2026 so utilization is meaningful vs June spend.
-    june_start = date(_YEAR, 6, 1)
-    june_end = date(_YEAR, 6, 30)
+    # Monthly budgets over June 2026 (for test compatibility) and current November 2026.
     budget_specs = [
-        ("Marketing", "30000.00"),
-        ("Cloud Infrastructure", "50000.00"),
-        ("Payroll", "150000.00"),
-        ("Software", "22000.00"),
-        ("Office", "15000.00"),
-        ("Travel", "12000.00"),
+        ("Marketing", "45000.00"),
+        ("Cloud Infrastructure", "85000.00"),
+        ("Payroll", "160000.00"),
+        ("Software", "35000.00"),
+        ("Office", "20000.00"),
+        ("Travel", "25000.00"),
     ]
-    for cname, amount in budget_specs:
-        cat = cats.get(cname.lower())
-        if cat is None:
-            continue
-        _, created = _get_or_create(
-            session,
-            Budget,
-            where={
-                "user_id": merchant.id,
-                "business_id": business.id,
-                "category_id": cat.id,
-                "period": "monthly",
-                "start_date": june_start,
-                "end_date": june_end,
-            },
-            defaults={"amount": Decimal(amount)},
-        )
-        if created:
-            counts["budgets"] += 1
+    for month_start, month_end in [
+        (date(_YEAR, 6, 1), date(_YEAR, 6, 30)),
+        (date(_YEAR, 11, 1), date(_YEAR, 11, 30)),
+    ]:
+        for cname, amount in budget_specs:
+            cat = cats.get(cname.lower())
+            if cat is None:
+                continue
+            _, created = _get_or_create(
+                session,
+                Budget,
+                where={
+                    "user_id": merchant.id,
+                    "business_id": business.id,
+                    "category_id": cat.id,
+                    "period": "monthly",
+                    "start_date": month_start,
+                    "end_date": month_end,
+                },
+                defaults={"amount": Decimal(amount)},
+            )
+            if created:
+                counts["budgets"] += 1
 
     # ---------------------------------------------------------------- goals
     goal_specs = [
-        ("Emergency Cash Reserve", "600000.00", "240000.00", date(_YEAR, 12, 31), "active"),
-        ("Tax Reserve", "250000.00", "190000.00", date(_YEAR, 9, 30), "active"),
-        ("Equipment Purchase", "600000.00", "410000.00", date(_YEAR, 8, 31), "active"),
-        ("Expansion Fund", "1000000.00", "300000.00", date(_YEAR + 1, 6, 30), "active"),
+        ("Emergency Cash Reserve", "600000.00", "520000.00", date(_YEAR, 12, 31), "active"),
+        ("Tax Reserve", "450000.00", "390000.00", date(_YEAR + 1, 3, 31), "active"),
+        ("Equipment Purchase", "600000.00", "580000.00", date(_YEAR, 11, 30), "active"),
+        ("Expansion Fund", "1500000.00", "850000.00", date(_YEAR + 1, 6, 30), "active"),
     ]
     for name, target, current, target_date, status in goal_specs:
         _, created = _get_or_create(
@@ -264,7 +264,7 @@ def seed_demo_business(session=None) -> dict:
 
 
 def _build_transactions(cats, accounts):
-    """Return the deterministic Jan-Jun transaction tuples.
+    """Return the deterministic Jan-Nov transaction tuples.
 
     Each tuple is ``(account, category, type, amount, description, date)``.
     ``cats`` is keyed by lowercase category name; ``accounts`` by account name.
@@ -300,7 +300,7 @@ def _build_transactions(cats, accounts):
     for m in _MONTHS:
         day3 = 3
 
-        # Revenue (growing): 3 client invoices per month.
+        # Revenue (growing): 3-4 client invoices per month.
         rev_rows = {
             1: [(80000, "Acme Corp - invoice"), (90000, "Beta Labs - invoice"), (70000, "Globex - retainer")],
             2: [(90000, "Acme Corp - invoice"), (95000, "Beta Labs - invoice"), (75000, "Globex - retainer")],
@@ -308,6 +308,11 @@ def _build_transactions(cats, accounts):
             4: [(100000, "Acme Corp - invoice"), (100000, "Beta Labs - invoice"), (100000, "Initech - invoice")],
             5: [(105000, "Acme Corp - invoice"), (105000, "Beta Labs - invoice"), (110000, "Initech - invoice")],
             6: [(110000, "Acme Corp - invoice"), (115000, "Beta Labs - invoice"), (115000, "Initech - invoice")],
+            7: [(120000, "Acme Corp - invoice"), (120000, "Beta Labs - invoice"), (115000, "Initech - invoice")],
+            8: [(125000, "Acme Corp - invoice"), (130000, "Beta Labs - invoice"), (120000, "Initech - invoice"), (85000, "Vertex AI - deployment fee")],
+            9: [(130000, "Acme Corp - invoice"), (135000, "Beta Labs - invoice"), (125000, "Initech - invoice"), (90000, "Vertex AI - deployment fee")],
+            10: [(145000, "Acme Corp - Q4 invoice"), (140000, "Beta Labs - consumption"), (135000, "Initech - ARR renewal"), (95000, "Vertex AI - license")],
+            11: [(150000, "Stripe Payout - Enterprise ARR"), (155000, "Beta Labs - monthly usage"), (140000, "Initech - quarterly fee")],
         }[m]
         for i, (amount, desc) in enumerate(rev_rows):
             add((operating, rev, "income", Decimal(amount), desc, _d(m, day3 + i)))
@@ -316,7 +321,7 @@ def _build_transactions(cats, accounts):
         add((operating, payroll, "expense", Decimal("45000"), "Payroll - senior engineer", _d(m, 5)))
         add((operating, payroll, "expense", Decimal("40000"), "Payroll - product manager", _d(m, 5)))
         add((operating, payroll, "expense", Decimal("35000"), "Payroll - support lead", _d(m, 5)))
-        if m == 6:
+        if m in (6, 10):
             add((operating, payroll, "expense", Decimal("15000"), "Payroll - performance bonus", _d(m, 5)))
 
         # Cloud Infrastructure (rising).
@@ -327,11 +332,16 @@ def _build_transactions(cats, accounts):
             4: [(30000, "AWS - kubernetes cluster"), (28000, "AWS - data pipeline")],
             5: [(31000, "AWS - kubernetes cluster"), (30000, "AWS - data pipeline")],
             6: [(33000, "AWS - kubernetes cluster"), (31000, "AWS - data pipeline")],
+            7: [(34000, "AWS - kubernetes cluster"), (32000, "AWS - data pipeline")],
+            8: [(36000, "AWS - kubernetes cluster"), (33000, "AWS - data pipeline")],
+            9: [(38000, "AWS - kubernetes cluster"), (35000, "AWS - data pipeline")],
+            10: [(41000, "AWS - kubernetes cluster"), (37000, "AWS - data pipeline")],
+            11: [(43000, "AWS - kubernetes cluster"), (39000, "AWS - data pipeline")],
         }[m]
         for i, (amount, desc) in enumerate(cloud_rows):
             add((card, cloud, "expense", Decimal(amount), desc, _d(m, 8 + i)))
 
-        # Marketing (March spike).
+        # Marketing.
         mkt_rows = {
             1: [(18000, "Google Ads - campaign")],
             2: [(22000, "Google Ads - campaign")],
@@ -339,6 +349,11 @@ def _build_transactions(cats, accounts):
             4: [(25000, "Google Ads - campaign")],
             5: [(26000, "Google Ads - campaign")],
             6: [(28000, "Google Ads - campaign")],
+            7: [(28000, "Google Ads - enterprise campaign")],
+            8: [(30000, "Google Ads - enterprise campaign"), (18000, "LinkedIn B2B Sponsored Content")],
+            9: [(32000, "Google Ads - enterprise campaign"), (20000, "LinkedIn B2B Sponsored Content")],
+            10: [(36000, "Google Ads - Q4 campaign"), (22000, "LinkedIn B2B Sponsored Content")],
+            11: [(38000, "Google Ads - Q4 campaign"), (24000, "LinkedIn B2B Sponsored Content")],
         }[m]
         for i, (amount, desc) in enumerate(mkt_rows):
             add((operating, marketing, "expense", Decimal(amount), desc, _d(m, 12 + i)))
@@ -351,6 +366,7 @@ def _build_transactions(cats, accounts):
             ("Slack - business", 4500),
             ("Github - teams", 8000),
             ("Jira - cloud", 6000),
+            ("Datadog - Observability", 7500),
         ]
         for i, (desc, amount) in enumerate(software_tools):
             add((operating, software, "expense", Decimal(amount), desc, _d(m, 15 + (i % 10))))
@@ -369,7 +385,7 @@ def _build_transactions(cats, accounts):
         add((operating, office_supplies, "expense", Decimal("1800"), "Office stationery", _d(m, 11)))
 
         # Travel.
-        travel_amounts = {1: 14000, 2: 6000, 3: 21000, 4: 8000, 5: 16000, 6: 9000}
+        travel_amounts = {1: 14000, 2: 6000, 3: 21000, 4: 8000, 5: 16000, 6: 9000, 7: 12000, 8: 15000, 9: 18000, 10: 24000, 11: 8500}
         add((operating, travel, "expense", Decimal(travel_amounts[m]), "Business travel - flights & hotels", _d(m, 17)))
 
         # Bank fees.
@@ -377,7 +393,7 @@ def _build_transactions(cats, accounts):
         add((gateway, bank_fees, "expense", Decimal("612"), "Payment gateway fee", _d(m, 20)))
 
         # Taxes.
-        taxes_amounts = {1: 40000, 2: 0, 3: 45000, 4: 0, 5: 0, 6: 52000}
+        taxes_amounts = {1: 40000, 2: 0, 3: 45000, 4: 0, 5: 0, 6: 52000, 7: 0, 8: 0, 9: 60000, 10: 0, 11: 0}
         if taxes_amounts[m]:
             add((operating, taxes, "expense", Decimal(taxes_amounts[m]), "GST / income-tax provisional", _d(m, 22)))
 
@@ -393,6 +409,13 @@ def _build_transactions(cats, accounts):
         ("Northwind Consulting", "380000", _d(5, 26)),  # unusual large payout
         ("Brightline Media", "20000", _d(6, 10)),
         ("Helix Components", "51000", _d(6, 22)),
+        ("Brightline Media", "22000", _d(7, 18)),
+        ("Helix Components", "53000", _d(8, 20)),
+        ("Northwind Logistics", "39000", _d(9, 15)),
+        ("Datadog Enterprise", "46000", _d(10, 12)),
+        ("Deel Global Payroll Contractor", "64000", _d(10, 25)),
+        ("Snowflake Data Cloud", "48000", _d(10, 28)),
+        ("Stripe Merchant Settlement", "295000", _d(11, 1)),
     ]
     for desc, amount, when in vendor_rows:
         add((operating, vendors, "expense", Decimal(amount), desc, when))

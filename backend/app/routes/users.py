@@ -155,7 +155,7 @@ def _seed_demo_data():
         .where(
             BusinessMember.user_id == merchant.id,
             BusinessMember.role == "OWNER",
-            Business.name == "Demo Corp",
+            Business.name.in_(["Apex Global Technologies", "Demo Corp"]),
         )
         .order_by(Business.created_at.asc())
         .limit(1)

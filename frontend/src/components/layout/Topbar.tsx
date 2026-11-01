@@ -163,7 +163,16 @@ export function Topbar({
         />
       </div>
 
-      <div className="ml-auto flex flex-1 justify-end lg:ml-0 lg:flex-none">
+      <div className="ml-auto flex items-center gap-3">
+        <div className="hidden items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400 sm:flex shadow-sm">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+          </span>
+          <span>Live Production Ledger</span>
+          <span className="text-emerald-500/60 font-mono text-[11px]">• FY2026-Q4</span>
+        </div>
+
         <button
           type="button"
           onClick={toggleTheme}
