@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS audit_records (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT audit_records_kind_check
-        CHECK (kind IN ('risk', 'recommendation', 'decision'))
+        CHECK (kind IN ('risk', 'recommendation', 'decision', 'reconciliation'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_records_user_id

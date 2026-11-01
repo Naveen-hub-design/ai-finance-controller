@@ -168,7 +168,7 @@ def test_context_service_called_with_user_id():
         mock_ctx.return_value = _sample_context()
         build_controller_report("u-77", "intent")
 
-    mock_ctx.assert_called_once_with("u-77")
+    mock_ctx.assert_called_once_with("u-77", None)
 
 
 def test_risk_service_called_with_user_id():
@@ -185,7 +185,7 @@ def test_risk_service_called_with_user_id():
         mock_risk.return_value = []
         build_controller_report("u-77", "intent")
 
-    mock_risk.assert_called_once_with("u-77")
+    mock_risk.assert_called_once_with("u-77", None)
 
 
 def test_recommendations_service_called_with_user_id():
@@ -202,7 +202,7 @@ def test_recommendations_service_called_with_user_id():
         mock_rec.return_value = []
         build_controller_report("u-77", "intent")
 
-    mock_rec.assert_called_once_with("u-77")
+    mock_rec.assert_called_once_with("u-77", None)
 
 
 def test_provider_called_through_send_text_request_boundary():

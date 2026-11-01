@@ -13,10 +13,20 @@ def _decimal(value) -> Decimal:
     return Decimal(str(value or 0))
 
 
-def build_financial_facts(user_id) -> dict:
-    """Build verified financial facts for a single user."""
+def build_financial_facts(user_id, business_id=None) -> dict:
+    """Build verified financial facts for a single user or business context."""
 
     user_id = uuid.UUID(str(user_id))
+    if business_id is not None:
+        business_uuid = uuid.UUID(str(business_id))
+        account_filter = Account.business_id == business_uuid
+        budget_filter = Budget.business_id == business_uuid
+        goal_filter = FinancialGoal.business_id == business_uuid
+    else:
+        from sqlalchemy import and_
+        account_filter = and_(Account.user_id == user_id, Account.business_id.is_(None))
+        budget_filter = and_(Budget.user_id == user_id, Budget.business_id.is_(None))
+        goal_filter = and_(FinancialGoal.user_id == user_id, FinancialGoal.business_id.is_(None))
 
     income = (
         db.session.query(
@@ -24,7 +34,7 @@ def build_financial_facts(user_id) -> dict:
         )
         .join(Account, Transaction.account_id == Account.id)
         .filter(
-            Account.user_id == user_id,
+            account_filter,
             Transaction.transaction_type == "income",
         )
         .scalar()
@@ -36,7 +46,7 @@ def build_financial_facts(user_id) -> dict:
         )
         .join(Account, Transaction.account_id == Account.id)
         .filter(
-            Account.user_id == user_id,
+            account_filter,
             Transaction.transaction_type == "expense",
         )
         .scalar()
@@ -45,7 +55,7 @@ def build_financial_facts(user_id) -> dict:
     transaction_count = (
         db.session.query(func.count(Transaction.id))
         .join(Account, Transaction.account_id == Account.id)
-        .filter(Account.user_id == user_id)
+        .filter(account_filter)
         .scalar()
     )
 
@@ -53,7 +63,7 @@ def build_financial_facts(user_id) -> dict:
         db.session.query(func.count(Transaction.id))
         .join(Account, Transaction.account_id == Account.id)
         .filter(
-            Account.user_id == user_id,
+            account_filter,
             Transaction.transaction_type == "income",
         )
         .scalar()
@@ -63,7 +73,7 @@ def build_financial_facts(user_id) -> dict:
         db.session.query(func.count(Transaction.id))
         .join(Account, Transaction.account_id == Account.id)
         .filter(
-            Account.user_id == user_id,
+            account_filter,
             Transaction.transaction_type == "expense",
         )
         .scalar()
@@ -73,7 +83,7 @@ def build_financial_facts(user_id) -> dict:
         db.session.query(
             func.coalesce(func.sum(Account.current_balance), 0)
         )
-        .filter(Account.user_id == user_id)
+        .filter(account_filter)
         .scalar()
     )
 
@@ -89,7 +99,7 @@ def build_financial_facts(user_id) -> dict:
         .join(Transaction, Transaction.category_id == Category.id)
         .join(Account, Transaction.account_id == Account.id)
         .filter(
-            Account.user_id == user_id,
+            account_filter,
             Transaction.transaction_type == "expense",
         )
         .group_by(Category.id, Category.name)
@@ -107,16 +117,36 @@ def build_financial_facts(user_id) -> dict:
 
     budgets = (
         db.session.query(Budget)
-        .filter(Budget.user_id == user_id)
+        .filter(budget_filter)
         .order_by(Budget.start_date)
         .all()
     )
+
+    budget_category_ids = {
+        budget.category_id
+        for budget in budgets
+        if budget.category_id is not None
+    }
+
+    category_names: dict = {}
+    if budget_category_ids:
+        category_rows = (
+            db.session.query(Category.id, Category.name)
+            .filter(Category.id.in_(budget_category_ids))
+            .all()
+        )
+        category_names = {category_id: name for category_id, name in category_rows}
 
     budget_facts = [
         {
             "id": str(budget.id),
             "category_id": (
                 str(budget.category_id)
+                if budget.category_id is not None
+                else None
+            ),
+            "category_name": (
+                category_names.get(budget.category_id)
                 if budget.category_id is not None
                 else None
             ),
@@ -130,7 +160,7 @@ def build_financial_facts(user_id) -> dict:
 
     goals = (
         db.session.query(FinancialGoal)
-        .filter(FinancialGoal.user_id == user_id)
+        .filter(goal_filter)
         .order_by(FinancialGoal.target_date)
         .all()
     )

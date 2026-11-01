@@ -21,6 +21,12 @@ class Budget(db.Model):
         db.Uuid,
         db.ForeignKey("categories.id", ondelete="SET NULL"),
     )
+    # Optional business scope (Milestone F9.x.1). NULL => personal budget.
+    business_id = db.Column(
+        db.Uuid,
+        db.ForeignKey("businesses.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     amount = db.Column(db.Numeric(19, 4), nullable=False)
     period = db.Column(db.String(20), nullable=False)
     start_date = db.Column(db.Date, nullable=False)

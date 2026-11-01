@@ -17,10 +17,11 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ..extensions import db
 from ..models import AuditRecord, User
+from ._authorization import require_business_data_access
 from ._ownership import require_owner_or
 
 # The only explicitly allowed audit kinds. Rejects arbitrary/bounded kinds.
-VALID_AUDIT_KINDS = {"risk", "recommendation", "decision"}
+VALID_AUDIT_KINDS = {"risk", "recommendation", "decision", "reconciliation"}
 
 
 m4_audit_bp = Blueprint(
@@ -64,7 +65,7 @@ def create_audit_record(user_id: uuid.UUID):
 
     if not isinstance(kind, str) or kind not in VALID_AUDIT_KINDS:
         return (
-            {"error": "kind must be one of: risk, recommendation, decision"},
+            {"error": "kind must be one of: risk, recommendation, decision, reconciliation"},
             400,
         )
 
@@ -95,19 +96,42 @@ def create_audit_record(user_id: uuid.UUID):
 @m4_audit_bp.get("/<uuid:user_id>/audit")
 @jwt_required()
 def list_audit_records(user_id: uuid.UUID):
-    forbidden = require_owner_or(user_id)
-    if forbidden is not None:
-        return forbidden
+    """Return the user's audit trail in a single scope.
+
+    ``?business_id=...`` selects the business-scoped trail: the caller must be
+    a member of that business AND the path ``user_id`` must be a member of the
+    same business (identity-binding, matching the rest of the API). Without the
+    parameter the personal trail is returned: only the owner may read it.
+    """
+    business_id_raw = request.args.get("business_id")
+    business_id = None
+    if business_id_raw:
+        try:
+            business_id = uuid.UUID(business_id_raw)
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "business_id must be a valid UUID"}, 400
+
+    if business_id is not None:
+        forbidden = require_business_data_access(business_id, user_id)
+        if forbidden is not None:
+            return forbidden
+    else:
+        forbidden = require_owner_or(user_id)
+        if forbidden is not None:
+            return forbidden
 
     _, error = _lookup_user(user_id)
     if error is not None:
         return error
 
     try:
+        query = db.session.query(AuditRecord).filter(AuditRecord.user_id == user_id)
+        if business_id is not None:
+            query = query.filter(AuditRecord.business_id == business_id)
+        else:
+            query = query.filter(AuditRecord.business_id.is_(None))
         records = (
-            db.session.query(AuditRecord)
-            .filter(AuditRecord.user_id == user_id)
-            .order_by(
+            query.order_by(
                 AuditRecord.created_at.desc(),
                 AuditRecord.id,
             )

@@ -1,4 +1,21 @@
-const SYSTEM_CURRENCY = "INR";
+const DEFAULT_CURRENCY = "INR";
+const CURRENCY_KEY = "ai_finance_display_currency";
+
+export function getDisplayCurrency(): string {
+  try {
+    return window.localStorage.getItem(CURRENCY_KEY) || DEFAULT_CURRENCY;
+  } catch {
+    return DEFAULT_CURRENCY;
+  }
+}
+
+export function setDisplayCurrency(code: string): void {
+  try {
+    window.localStorage.setItem(CURRENCY_KEY, code);
+  } catch {
+    // Storage unavailable; format falls back to the default currency.
+  }
+}
 
 function toNumber(
   value: string | number | null | undefined
@@ -26,7 +43,7 @@ export function formatCurrency(
 ): string {
   const n = toNumber(value);
   if (n === null) return "—";
-  const code = currency || SYSTEM_CURRENCY;
+  const code = currency || getDisplayCurrency();
   try {
     return new Intl.NumberFormat("en-IN", {
       style: "currency",
@@ -45,7 +62,7 @@ export function formatCompactCurrency(
 ): string {
   const n = toNumber(value);
   if (n === null) return "—";
-  const code = currency || SYSTEM_CURRENCY;
+  const code = currency || getDisplayCurrency();
   try {
     return new Intl.NumberFormat("en-IN", {
       style: "currency",

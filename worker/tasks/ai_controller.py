@@ -68,10 +68,13 @@ def _decision_exists(user_id, task_id: str) -> bool:
     return False
 
 
-def _write_decision_audit(user_id, task_id: str, intent: str, result: dict) -> None:
+def _write_decision_audit(
+    user_id, business_id, task_id: str, intent: str, result: dict
+) -> None:
     """Persist an immutable decision audit record for a completed run."""
     record = AuditRecord(
         user_id=user_id,
+        business_id=business_id,
         kind="decision",
         payload={
             "task_id": task_id,
@@ -92,13 +95,14 @@ def _write_decision_audit(user_id, task_id: str, intent: str, result: dict) -> N
     retry_backoff=True,
     retry_backoff_max=60,
 )
-def run_ai_controller(self, user_id: str, intent: str) -> dict:
+def run_ai_controller(self, user_id: str, intent: str, business_id: str | None = None) -> dict:
     """Run the AI finance controller for a user as an asynchronous job.
 
     Args:
         user_id: The user's UUID as a string. Invalid UUIDs fail permanently;
             they are never retried.
         intent: The user's intent / question for the controller.
+        business_id: Optional business scope as a string.
 
     Returns:
         The JSON-serializable ``FinancialControllerReport.to_dict()``.
@@ -106,6 +110,7 @@ def run_ai_controller(self, user_id: str, intent: str) -> dict:
     # Validate up front. A non-UUID input is a permanent input error, so it
     # is raised before any controller work and never retried.
     user_uuid = uuid.UUID(str(user_id))
+    business_uuid = uuid.UUID(str(business_id)) if business_id else None
 
     task_id = self.request.id
     app = create_app(Config)
@@ -113,7 +118,7 @@ def run_ai_controller(self, user_id: str, intent: str) -> dict:
     try:
         with app.app_context():
             try:
-                report = build_controller_report(user_uuid, intent)
+                report = build_controller_report(user_uuid, intent, business_id=business_uuid)
             except AIConfigurationError:
                 # Missing/misconfigured provider is permanent -- never retried.
                 raise
@@ -124,7 +129,9 @@ def run_ai_controller(self, user_id: str, intent: str) -> dict:
 
             if not _decision_exists(user_uuid, task_id):
                 try:
-                    _write_decision_audit(user_uuid, task_id, intent, result)
+                    _write_decision_audit(
+                        user_uuid, business_uuid, task_id, intent, result
+                    )
                 except SQLAlchemyError:
                     db.session.rollback()
                     raise

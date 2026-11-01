@@ -81,6 +81,9 @@ export const api = {
   put<T>(path: string, body: unknown): Promise<T> {
     return request<T>(path, { method: "PUT", body: JSON.stringify(body) });
   },
+  patch<T>(path: string, body: unknown): Promise<T> {
+    return request<T>(path, { method: "PATCH", body: JSON.stringify(body) });
+  },
   delete<T>(path: string): Promise<T> {
     return request<T>(path, { method: "DELETE" });
   },

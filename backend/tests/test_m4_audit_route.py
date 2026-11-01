@@ -8,7 +8,7 @@ from unittest.mock import patch
 from flask.testing import FlaskClient
 
 from app.extensions import db
-from app.models import AuditRecord
+from app.models import AuditRecord, Business, BusinessMember, User
 
 
 def _create_user(
@@ -320,6 +320,217 @@ def test_get_database_failure_returns_500(client: FlaskClient) -> None:
 
     assert response.status_code == 500
     assert response.get_json()["error"] == "internal server error"
+
+
+# ---------------------------------------------------------------------------
+# GET — business scope (?business_id=)
+# ---------------------------------------------------------------------------
+
+
+def _seed_identity(app, email: str, role: str = "MERCHANT") -> str:
+    with app.app_context():
+        u = User(email=email, full_name="Scoped User", role=role)
+        db.session.add(u)
+        db.session.commit()
+        return str(u.id)
+
+
+def _seed_business(app, name: str) -> str:
+    with app.app_context():
+        b = Business(name=name)
+        db.session.add(b)
+        db.session.commit()
+        return str(b.id)
+
+
+def _seed_member(app, business_id: str, user_id: str, role: str) -> None:
+    with app.app_context():
+        db.session.add(
+            BusinessMember(
+                business_id=uuid.UUID(business_id),
+                user_id=uuid.UUID(user_id),
+                role=role,
+            )
+        )
+        db.session.commit()
+
+
+def _seed_record(app, user_id: str, tag: str, business_id: str | None = None) -> None:
+    with app.app_context():
+        db.session.add(
+            AuditRecord(
+                user_id=uuid.UUID(user_id),
+                business_id=uuid.UUID(business_id) if business_id else None,
+                kind="decision",
+                payload={"tag": tag},
+            )
+        )
+        db.session.commit()
+
+
+def test_get_audit_business_scope_owner_sees_own_business_trail(
+    client: FlaskClient, app,
+) -> None:
+    user = _create_user(client)
+    biz = _seed_business(app, "Owner Ltd")
+    _seed_member(app, biz, user["id"], "OWNER")
+    _seed_record(app, user["id"], "biz-event", business_id=biz)
+
+    response = client.get(
+        f"/api/users/{user['id']}/audit?business_id={biz}",
+        headers=_headers(user["_token"]),
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["user_id"] == user["id"]
+    tags = [r["payload"]["tag"] for r in data["records"]]
+    assert tags == ["biz-event"]
+
+
+def test_get_audit_business_scope_allows_finance_manager(
+    client: FlaskClient, app,
+) -> None:
+    owner = _create_user(client)
+    fm_id = _seed_identity(app, "fm-scope@example.com", role="FINANCE_MANAGER")
+    biz = _seed_business(app, "Manager Ltd")
+    _seed_member(app, biz, owner["id"], "OWNER")
+    _seed_member(app, biz, fm_id, "FINANCE_MANAGER")
+    _seed_record(app, owner["id"], "shared", business_id=biz)
+
+    response = client.get(
+        f"/api/users/{owner['id']}/audit?business_id={biz}",
+        headers=_headers(_token_for(client, fm_id)),
+    )
+
+    assert response.status_code == 200
+    tags = [r["payload"]["tag"] for r in response.get_json()["records"]]
+    assert tags == ["shared"]
+
+
+def test_get_audit_business_scope_forbids_foreign_business_member(
+    client: FlaskClient, app,
+) -> None:
+    owner = _create_user(client)
+    fm_id = _seed_identity(app, "fm-foreign@example.com", role="FINANCE_MANAGER")
+    biz_a = _seed_business(app, "Foreign Ltd")
+    biz_b = _seed_business(app, "Other Ltd")
+    _seed_member(app, biz_a, owner["id"], "OWNER")
+    _seed_member(app, biz_b, fm_id, "FINANCE_MANAGER")
+
+    response = client.get(
+        f"/api/users/{owner['id']}/audit?business_id={biz_a}",
+        headers=_headers(_token_for(client, fm_id)),
+    )
+
+    assert response.status_code == 403
+
+
+def test_get_audit_business_scope_isolates_businesses(
+    client: FlaskClient, app,
+) -> None:
+    user = _create_user(client)
+    biz_a = _seed_business(app, "Isolate A Ltd")
+    biz_b = _seed_business(app, "Isolate B Ltd")
+    _seed_member(app, biz_a, user["id"], "OWNER")
+    _seed_member(app, biz_b, user["id"], "OWNER")
+    _seed_record(app, user["id"], "event-a", business_id=biz_a)
+    _seed_record(app, user["id"], "event-b", business_id=biz_b)
+
+    response_a = client.get(
+        f"/api/users/{user['id']}/audit?business_id={biz_a}",
+        headers=_headers(user["_token"]),
+    )
+    response_b = client.get(
+        f"/api/users/{user['id']}/audit?business_id={biz_b}",
+        headers=_headers(user["_token"]),
+    )
+
+    assert response_a.status_code == 200
+    assert response_b.status_code == 200
+    tags_a = [r["payload"]["tag"] for r in response_a.get_json()["records"]]
+    tags_b = [r["payload"]["tag"] for r in response_b.get_json()["records"]]
+    assert tags_a == ["event-a"]
+    assert tags_b == ["event-b"]
+
+
+def test_get_audit_business_scope_forbids_non_member(client: FlaskClient, app) -> None:
+    owner = _create_user(client)
+    outsider = _create_user(client, email="audit-outsider@example.com")
+    biz = _seed_business(app, "Private Ltd")
+    _seed_member(app, biz, owner["id"], "OWNER")
+    _seed_record(app, owner["id"], "secret", business_id=biz)
+
+    response = client.get(
+        f"/api/users/{owner['id']}/audit?business_id={biz}",
+        headers=_headers(outsider["_token"]),
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "forbidden"
+
+
+def test_get_audit_business_scope_forbids_platform_admin(
+    client: FlaskClient, app,
+) -> None:
+    owner = _create_user(client)
+    admin_id = _seed_identity(app, "pm-scope@example.com", role="PLATFORM_ADMIN")
+    biz = _seed_business(app, "Admin Ltd")
+    _seed_member(app, biz, owner["id"], "OWNER")
+    _seed_record(app, owner["id"], "secret", business_id=biz)
+
+    response = client.get(
+        f"/api/users/{owner['id']}/audit?business_id={biz}",
+        headers=_headers(_token_for(client, admin_id)),
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "forbidden"
+
+
+def test_get_audit_business_scope_requires_jwt(client: FlaskClient, app) -> None:
+    owner = _create_user(client)
+    biz = _seed_business(app, "NoAuth Ltd")
+    _seed_member(app, biz, owner["id"], "OWNER")
+    _seed_record(app, owner["id"], "secret", business_id=biz)
+
+    response = client.get(f"/api/users/{owner['id']}/audit?business_id={biz}")
+
+    assert response.status_code == 401
+
+
+def test_get_audit_personal_and_business_scopes_are_isolated(
+    client: FlaskClient, app,
+) -> None:
+    user = _create_user(client)
+    biz = _seed_business(app, "Mix Ltd")
+    _seed_member(app, biz, user["id"], "OWNER")
+    _seed_record(app, user["id"], "personal-a")
+    _seed_record(app, user["id"], "personal-b")
+    _seed_record(app, user["id"], "business-event", business_id=biz)
+
+    def _tags(business_id=None):
+        path = f"/api/users/{user['id']}/audit"
+        if business_id:
+            path = f"{path}?business_id={business_id}"
+        response = client.get(path, headers=_headers(user["_token"]))
+        assert response.status_code == 200
+        return [r["payload"]["tag"] for r in response.get_json()["records"]]
+
+    assert set(_tags()) == {"personal-a", "personal-b"}
+    assert _tags(business_id=biz) == ["business-event"]
+
+
+def test_get_audit_rejects_invalid_business_id(client: FlaskClient) -> None:
+    user = _create_user(client)
+
+    response = client.get(
+        f"/api/users/{user['id']}/audit?business_id=not-a-uuid",
+        headers=_headers(user["_token"]),
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "business_id must be a valid UUID"
 
 
 # ---------------------------------------------------------------------------

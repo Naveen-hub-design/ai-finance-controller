@@ -14,6 +14,9 @@ Design rules:
 - **No AI calls.** This model never invokes any AI provider.
 - **User scoped.** Each record is tied to a user via a foreign key with
   ``ON DELETE CASCADE``, matching the existing models.
+- **Optionally business scoped.** Records created for a business-carried
+  action carry an optional ``business_id`` so business members can read the
+  business-scoped trail; records created without a business stay personal.
 """
 
 import uuid
@@ -41,6 +44,15 @@ class AuditRecord(db.Model):
         db.Uuid,
         db.ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    # Optional business scope: NULL means a personal (non-business) record.
+    # Records derived from a business-carried action store the business so the
+    # business-scoped audit listing can isolate members from personal data.
+    business_id = db.Column(
+        db.Uuid,
+        db.ForeignKey("businesses.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     kind = db.Column(db.String(50), nullable=False)
     # JSON on all dialects; JSONB on PostgreSQL for durable, queryable audit

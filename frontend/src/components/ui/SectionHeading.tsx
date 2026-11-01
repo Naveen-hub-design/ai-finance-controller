@@ -6,6 +6,7 @@ interface SectionHeadingProps {
   description?: string;
   action?: ReactNode;
   className?: string;
+  id?: string;
 }
 
 export function SectionHeading({
@@ -13,6 +14,7 @@ export function SectionHeading({
   description,
   action,
   className,
+  id,
 }: SectionHeadingProps) {
   return (
     <div
@@ -22,7 +24,10 @@ export function SectionHeading({
       )}
     >
       <div>
-        <h2 className="text-base font-semibold tracking-tight text-foreground">
+        <h2
+          id={id}
+          className="text-base font-semibold tracking-tight text-foreground"
+        >
           {title}
         </h2>
         {description && (

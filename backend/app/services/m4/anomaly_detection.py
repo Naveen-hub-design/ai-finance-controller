@@ -86,17 +86,23 @@ def _normalize_description(description: str | None) -> str:
     return description.strip().lower()
 
 
-def _user_transactions(user_id) -> List[Transaction]:
-    """Fetch all transactions belonging to the requested user."""
-    # Coerce to a UUID the same way the M2 intelligence layer does, so the
-    # query binds correctly against the Uuid column across dialects.
+def _user_transactions(user_id, business_id=None) -> List[Transaction]:
+    """Fetch all transactions belonging to the requested user or business."""
     user_uuid = uuid.UUID(str(user_id))
 
-    stmt = (
-        select(Transaction)
-        .join(Account, Transaction.account_id == Account.id)
-        .where(Account.user_id == user_uuid)
-    )
+    if business_id is not None:
+        business_uuid = uuid.UUID(str(business_id))
+        stmt = (
+            select(Transaction)
+            .join(Account, Transaction.account_id == Account.id)
+            .where(Account.business_id == business_uuid)
+        )
+    else:
+        stmt = (
+            select(Transaction)
+            .join(Account, Transaction.account_id == Account.id)
+            .where(Account.user_id == user_uuid, Account.business_id.is_(None))
+        )
     return list(db.session.execute(stmt).scalars().all())
 
 
@@ -275,11 +281,12 @@ def _category_concentration(
             )
 
 
-def run_risk_intelligence(user_id) -> List[dict]:
-    """Run deterministic risk intelligence for a single user.
+def run_risk_intelligence(user_id, business_id=None) -> List[dict]:
+    """Run deterministic risk intelligence for a single user or business.
 
     Args:
         user_id: Identifier of the user (UUID, string, or equivalent).
+        business_id: Optional business scope.
 
     Returns:
         A list of finding dictionaries, each with a stable structure::
@@ -299,7 +306,7 @@ def run_risk_intelligence(user_id) -> List[dict]:
         string. Monetary values are always Decimal-safe strings, never
         floats.
     """
-    txns = _user_transactions(user_id)
+    txns = _user_transactions(user_id, business_id)
     expenses = [t for t in txns if t.transaction_type == "expense"]
 
     findings: List[_Finding] = []

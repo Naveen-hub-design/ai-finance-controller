@@ -19,6 +19,15 @@ class Account(db.Model):
         nullable=False,
     )
 
+    # Optional business scope (Milestone F9.x.1). NULL => personal account.
+    # When set, the value is validated server-side against the caller's
+    # business membership before the account can be created/modified.
+    business_id = db.Column(
+        db.Uuid,
+        db.ForeignKey("businesses.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+
     name = db.Column(db.String(255), nullable=False)
     account_type = db.Column(db.String(50), nullable=False)
 

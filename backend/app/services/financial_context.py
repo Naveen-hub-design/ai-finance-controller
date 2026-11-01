@@ -19,42 +19,9 @@ from typing import Any
 from .financial_intelligence import build_financial_facts
 
 
-def build_financial_context(user_id) -> dict:
-    """Build a structured AI-ready financial context for a user.
-
-    The context is produced deterministically from the user's M2
-    financial facts and is organized into logical sections. Monetary
-    values are preserved exactly as returned by M2 (decimal-precision
-    strings, never floats).
-
-    The returned dictionary is a fresh, deep copy of the underlying
-    facts, so mutating it never affects the original facts object or
-    any other caller.
-
-    Args:
-        user_id: Identifier of the user (UUID, string, or equivalent).
-
-    Returns:
-        A dictionary with the following structure::
-
-            {
-                "summary": {
-                    "total_income": str,
-                    "total_expenses": str,
-                    "net_cash_flow": str,
-                    "account_balance": str,
-                },
-                "activity": {
-                    "transaction_count": int,
-                    "income_transaction_count": int,
-                    "expense_transaction_count": int,
-                },
-                "spending_by_category": [ {category, amount}, ... ],
-                "budgets": [ {...}, ... ],
-                "financial_goals": [ {...}, ... ],
-            }
-    """
-    facts = build_financial_facts(user_id)
+def build_financial_context(user_id, business_id=None) -> dict:
+    """Build a structured AI-ready financial context for a user or business."""
+    facts = build_financial_facts(user_id, business_id)
 
     context = {
         "summary": {

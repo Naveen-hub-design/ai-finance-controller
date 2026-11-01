@@ -17,6 +17,12 @@ class FinancialGoal(db.Model):
         db.ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # Optional business scope (Milestone F9.x.1). NULL => personal goal.
+    business_id = db.Column(
+        db.Uuid,
+        db.ForeignKey("businesses.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     name = db.Column(db.String(255), nullable=False)
     target_amount = db.Column(db.Numeric(19, 4), nullable=False)
     current_amount = db.Column(db.Numeric(19, 4), nullable=False, server_default="0")

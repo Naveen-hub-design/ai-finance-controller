@@ -410,6 +410,40 @@ def test_service_sqlalchemy_error_returns_500(client: FlaskClient) -> None:
     assert response.get_json()["error"] == "internal server error"
 
 
+def test_service_ai_configuration_error_returns_503(client: FlaskClient) -> None:
+    from app.services.openai_provider import AIConfigurationError
+
+    user = _create_user(client, email="svc-ai-config@example.com")
+
+    with _patch_service(
+        side_effect=AIConfigurationError("AI provider is not configured")
+    ):
+        response = client.post(
+            f"/api/users/{user['id']}/ai-controller",
+            json={"intent": "Question?"},
+            headers=_headers(user["_token"]),
+        )
+
+    assert response.status_code == 503
+    assert response.get_json()["error"] == "AI provider is not configured"
+
+
+def test_service_ai_provider_error_returns_502(client: FlaskClient) -> None:
+    from app.services.openai_provider import AIProviderError
+
+    user = _create_user(client, email="svc-ai-provider@example.com")
+
+    with _patch_service(side_effect=AIProviderError("AI request failed")):
+        response = client.post(
+            f"/api/users/{user['id']}/ai-controller",
+            json={"intent": "Question?"},
+            headers=_headers(user["_token"]),
+        )
+
+    assert response.status_code == 502
+    assert response.get_json()["error"] == "AI request failed"
+
+
 def test_user_lookup_error_returns_500(client: FlaskClient) -> None:
     from sqlalchemy.exc import SQLAlchemyError
 

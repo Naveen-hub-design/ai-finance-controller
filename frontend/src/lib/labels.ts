@@ -3,6 +3,8 @@ import type {
   AuditKind,
   BudgetPeriod,
   GoalStatus,
+  RecommendationPriority,
+  RiskSeverity,
   TransactionType,
 } from "./types";
 
@@ -49,16 +51,42 @@ export const budgetPeriodLabels: Record<BudgetPeriod, string> = {
   yearly: "Yearly",
 };
 
+export const riskSeverityLabels: Record<RiskSeverity, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+};
+
+export const riskSeverityTones: Record<RiskSeverity, Tone> = {
+  low: "neutral",
+  medium: "warning",
+  high: "danger",
+};
+
+export const recommendationPriorityLabels: Record<RecommendationPriority, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+};
+
+export const recommendationPriorityTones: Record<RecommendationPriority, Tone> = {
+  low: "success",
+  medium: "warning",
+  high: "danger",
+};
+
 export const auditKindLabels: Record<AuditKind, string> = {
   decision: "Decision",
   risk: "Risk",
   recommendation: "Recommendation",
+  reconciliation: "Reconciliation",
 };
 
 export const auditKindTones: Record<AuditKind, Tone> = {
   decision: "accent",
   risk: "danger",
   recommendation: "success",
+  reconciliation: "accent",
 };
 
 export const budgetStatusTones: Record<string, Tone> = {
@@ -67,6 +95,19 @@ export const budgetStatusTones: Record<string, Tone> = {
   over: "danger",
   upcoming: "neutral",
 };
+
+const NEAR_LIMIT_THRESHOLD = 80;
+const OVER_THRESHOLD = 100;
+
+/** Canonical budget grading shared by every page that renders budgets. */
+export function budgetStatusFromProgress(
+  progress: number | null
+): keyof typeof budgetStatusTones {
+  if (progress === null || progress < 0) return "upcoming";
+  if (progress >= OVER_THRESHOLD) return "over";
+  if (progress >= NEAR_LIMIT_THRESHOLD) return "near_limit";
+  return "on_track";
+}
 
 export function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);

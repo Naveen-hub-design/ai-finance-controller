@@ -27,31 +27,12 @@ from .financial_prompts import (
 from .openai_provider import send_text_request
 
 
-def explain_financial_question(user_id, user_question: str) -> str:
-    """Explain a user's financial question using the configured AI.
-
-    Builds the user's financial context, constructs the system and user
-    prompts, sends them to the configured AI provider, and returns the
-    provider's text response unchanged.
-
-    No context, prompt, or provider content is logged here. The user
-    question and financial context are passed to the prompt layer exactly
-    as supplied and never mutated.
-
-    Errors are intentionally not caught: if context building, prompt
-    construction, or the AI provider fails, the underlying exception
-    (e.g. ``AIConfigurationError`` or ``AIProviderError``) propagates to
-    the caller unchanged rather than being replaced by a fake fallback.
-
-    Args:
-        user_id: Identifier of the user (UUID, string, or equivalent).
-        user_question: The user's financial question, passed through
-            verbatim.
-
-    Returns:
-        The AI provider's text response as a string.
-    """
-    financial_context = build_financial_context(user_id)
+def explain_financial_question(user_id, user_question: str, business_id=None) -> str:
+    """Explain a user's financial question using the configured AI."""
+    if business_id is not None:
+        financial_context = build_financial_context(user_id, business_id)
+    else:
+        financial_context = build_financial_context(user_id)
     system_prompt = build_financial_system_prompt()
     user_prompt = build_financial_user_prompt(
         financial_context,

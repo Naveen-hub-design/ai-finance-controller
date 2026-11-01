@@ -16,6 +16,12 @@ class Config:
     SQLALCHEMY_DATABASE_URI: str = os.environ.get("DATABASE_URL", "sqlite:///:memory:")
     SQLALCHEMY_TRACK_MODIFICATIONS: bool = False
 
+    # Re-validate pooled connections before checkout. Postgres draws/containers
+    # can be recreated by the idempotent schema `migrate` flow; without this,
+    # a stale pooled connection would make the next request fail with "server
+    # closed the connection unexpectedly".
+    SQLALCHEMY_ENGINE_OPTIONS: dict = {"pool_pre_ping": True}
+
     # JWT signing secret. A dedicated JWT_SECRET_KEY is preferred; it falls
     # back to SECRET_KEY when only SECRET_KEY is supplied so existing local and
     # Compose setups keep working. Production must supply JWT_SECRET_KEY (or

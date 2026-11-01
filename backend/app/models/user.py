@@ -19,6 +19,12 @@ class User(db.Model):
     )
     email = db.Column(db.String(255), nullable=False, unique=True)
     full_name = db.Column(db.String(255))
+    # Application-level role for the F9.x.1 role architecture.
+    # 'PLATFORM_ADMIN' | 'MERCHANT' | 'FINANCE_MANAGER'. Defaults to MERCHANT; the
+    # client can never set this on registration/update -- it is assigned by a
+    # PLATFORM_ADMIN through the admin endpoints. The value is the application's
+    # source of truth: JWT is identity-only and never carries the role.
+    role = db.Column(db.String(32), nullable=False, default="MERCHANT")
     # Stores only the Werkzeug-generated password hash; never a plaintext
     # password. Nullable because users may be created outside the API (e.g.
     # directly via ORM in tests/seeders); the registration route enforces

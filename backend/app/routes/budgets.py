@@ -11,7 +11,8 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from ..auth import get_current_user_id
 from ..extensions import db
-from ..models import Account, Budget, Category, Transaction, User
+from ..models import Account, Budget, BusinessMember, Category, Transaction, User
+from ._authorization import require_business_data_access, require_business_member
 from ._ownership import require_owner_or
 from .users import users_bp
 
@@ -33,6 +34,7 @@ def _serialize_budget(budget: Budget) -> dict:
     return {
         "id": str(budget.id),
         "user_id": str(budget.user_id),
+        "business_id": str(budget.business_id) if budget.business_id is not None else None,
         "category_id": (
             str(budget.category_id)
             if budget.category_id is not None
@@ -62,6 +64,18 @@ def create_budget():
     period = payload.get("period")
     start_date_raw = payload.get("start_date")
     end_date_raw = payload.get("end_date")
+
+    business_id = None
+    if "business_id" in payload:
+        business_id_raw = payload.get("business_id")
+        if business_id_raw is not None:
+            try:
+                business_id = uuid.UUID(str(business_id_raw))
+            except (ValueError, AttributeError, TypeError):
+                return {"error": "business_id must be a valid UUID"}, 400
+            membership = require_business_member(business_id)
+            if membership is not None:
+                return membership
 
     # The authenticated identity is the authoritative owner. A client-supplied
     # user_id never overrides it; a mismatched one is rejected.
@@ -118,10 +132,22 @@ def create_budget():
                 return {"error": "category not found"}, 404
 
             if category.user_id != current_user_id:
-                return {"error": "category does not belong to user"}, 400
+                if business_id is not None:
+                    from ..models import BusinessMember
+                    is_cat_user_member = db.session.scalar(
+                        select(BusinessMember.user_id).where(
+                            BusinessMember.business_id == business_id,
+                            BusinessMember.user_id == category.user_id
+                        )
+                    ) is not None
+                    if not is_cat_user_member:
+                        return {"error": "category does not belong to user"}, 400
+                else:
+                    return {"error": "category does not belong to user"}, 400
 
         budget = Budget(
             user_id=current_user_id,
+            business_id=business_id,
             category_id=category_id,
             amount=amount,
             period=period,
@@ -157,7 +183,10 @@ def get_budget(budget_id: uuid.UUID):
     if budget is None:
         return {"error": "budget not found"}, 404
 
-    forbidden = require_owner_or(budget.user_id)
+    if budget.business_id is not None:
+        forbidden = require_business_member(budget.business_id)
+    else:
+        forbidden = require_owner_or(budget.user_id)
     if forbidden is not None:
         return forbidden
 
@@ -181,7 +210,10 @@ def update_budget(budget_id: uuid.UUID):
     if budget is None:
         return {"error": "budget not found"}, 404
 
-    forbidden = require_owner_or(budget.user_id)
+    if budget.business_id is not None:
+        forbidden = require_business_member(budget.business_id)
+    else:
+        forbidden = require_owner_or(budget.user_id)
     if forbidden is not None:
         return forbidden
 
@@ -231,7 +263,20 @@ def update_budget(budget_id: uuid.UUID):
             if category is None:
                 return {"error": "category not found"}, 404
             if category.user_id != budget.user_id:
-                return {"error": "category does not belong to user"}, 400
+                # A business budget may reference a category owned by another
+                # member of the same business; otherwise the category must
+                # belong to the budget owner. Mirror create_budget's rule.
+                if budget.business_id is not None:
+                    is_cat_user_member = db.session.scalar(
+                        select(BusinessMember.user_id).where(
+                            BusinessMember.business_id == budget.business_id,
+                            BusinessMember.user_id == category.user_id,
+                        )
+                    ) is not None
+                    if not is_cat_user_member:
+                        return {"error": "category does not belong to user"}, 400
+                else:
+                    return {"error": "category does not belong to user"}, 400
             budget.category_id = new_category_id
 
     try:
@@ -256,7 +301,10 @@ def delete_budget(budget_id: uuid.UUID):
     if budget is None:
         return {"error": "budget not found"}, 404
 
-    forbidden = require_owner_or(budget.user_id)
+    if budget.business_id is not None:
+        forbidden = require_business_member(budget.business_id)
+    else:
+        forbidden = require_owner_or(budget.user_id)
     if forbidden is not None:
         return forbidden
 
@@ -271,24 +319,15 @@ def delete_budget(budget_id: uuid.UUID):
     return "", 204
 
 
-def _budget_spending(user_id, budgets) -> dict:
-    """Return ``{budget_id: spent Decimal}`` for a user's budgets.
-
-    Spending is computed precisely from the database, per budget:
-
-    - only expense transactions on accounts owned by the user,
-    - only transactions whose ``transaction_date`` falls inclusively within the
-      budget's ``[start_date, end_date]`` window,
-    - when the budget has a ``category_id``, only transactions with the same
-      ``category_id``; otherwise every qualifying expense in the window counts.
-
-    A single aggregated ``SUM`` query is used (never loading transactions into
-    Python), grouped by budget id, and mapped back to budgets in Python.
-    """
+def _budget_spending(user_id, budgets, business_id=None) -> dict:
+    """Return ``{budget_id: spent Decimal}`` for a user's budgets."""
     if not budgets:
         return {}
 
-    user_account_ids = select(Account.id).where(Account.user_id == user_id)
+    if business_id is not None:
+        user_account_ids = select(Account.id).where(Account.business_id == business_id)
+    else:
+        user_account_ids = select(Account.id).where(Account.user_id == user_id, Account.business_id.is_(None))
 
     rows = (
         db.session.query(
@@ -308,7 +347,7 @@ def _budget_spending(user_id, budgets) -> dict:
                 ),
             ),
         )
-        .filter(Budget.user_id == user_id)
+        .filter(Budget.id.in_([b.id for b in budgets]))
         .group_by(Budget.id)
         .all()
     )
@@ -320,9 +359,19 @@ def _budget_spending(user_id, budgets) -> dict:
 @jwt_required()
 def list_budgets(user_id: uuid.UUID):
     """List a user's budgets with precise spending/progress information (owner only)."""
-    forbidden = require_owner_or(user_id)
-    if forbidden is not None:
-        return forbidden
+    business_id_raw = request.args.get("business_id")
+    if business_id_raw:
+        try:
+            business_id = uuid.UUID(business_id_raw)
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "business_id must be a valid UUID"}, 400
+        forbidden = require_business_data_access(business_id, user_id)
+        if forbidden is not None:
+            return forbidden
+    else:
+        forbidden = require_owner_or(user_id)
+        if forbidden is not None:
+            return forbidden
 
     try:
         user = db.session.get(User, user_id)
@@ -334,20 +383,24 @@ def list_budgets(user_id: uuid.UUID):
         return {"error": "user not found"}, 404
 
     try:
-        budgets = (
-            db.session.execute(
+        if business_id_raw:
+            stmt = (
                 select(Budget)
-                .where(Budget.user_id == user_id)
+                .where(Budget.business_id == business_id)
                 .order_by(Budget.start_date.asc(), Budget.id.asc())
             )
-            .scalars()
-            .all()
-        )
+        else:
+            stmt = (
+                select(Budget)
+                .where(Budget.user_id == user_id, Budget.business_id.is_(None))
+                .order_by(Budget.start_date.asc(), Budget.id.asc())
+            )
+        budgets = db.session.execute(stmt).scalars().all()
     except SQLAlchemyError:
         current_app.logger.exception("budget list failed")
         return {"error": "internal server error"}, 500
 
-    spending = _budget_spending(user_id, budgets)
+    spending = _budget_spending(user_id, budgets, business_id=business_id if business_id_raw else None)
 
     result = []
     for budget in budgets:

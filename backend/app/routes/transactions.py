@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from ..auth import get_current_user_id
 from ..extensions import db
 from ..models import Account, Category, Transaction, User
+from ._authorization import require_business_data_access, require_business_member
 from ._ownership import require_owner_or
 from .users import users_bp
 
@@ -113,8 +114,12 @@ def create_transaction():
         if account is None:
             return {"error": "account not found"}, 404
 
-        if account.user_id != current_user_id:
-            return {"error": "forbidden"}, 403
+        if account.business_id is not None:
+            forbidden = require_business_member(account.business_id)
+        else:
+            forbidden = require_owner_or(account.user_id)
+        if forbidden is not None:
+            return forbidden
 
         if category_id is not None:
             category = db.session.get(Category, category_id)
@@ -123,7 +128,18 @@ def create_transaction():
                 return {"error": "category not found"}, 404
 
             if category.user_id != account.user_id:
-                return {"error": "category does not belong to user"}, 400
+                if account.business_id is not None:
+                    from ..models import BusinessMember
+                    is_cat_user_member = db.session.scalar(
+                        select(BusinessMember.user_id).where(
+                            BusinessMember.business_id == account.business_id,
+                            BusinessMember.user_id == category.user_id
+                        )
+                    ) is not None
+                    if not is_cat_user_member:
+                        return {"error": "category does not belong to user"}, 400
+                else:
+                    return {"error": "category does not belong to user"}, 400
 
         transaction = Transaction(
             account_id=account_id,
@@ -162,7 +178,13 @@ def get_transaction(transaction_id: uuid.UUID):
     if transaction is None:
         return {"error": "transaction not found"}, 404
 
-    forbidden = require_owner_or(_transaction_owner_id(transaction))
+    account = db.session.get(Account, transaction.account_id)
+    if account is None:
+        return {"error": "account not found"}, 404
+    if account.business_id is not None:
+        forbidden = require_business_member(account.business_id)
+    else:
+        forbidden = require_owner_or(account.user_id)
     if forbidden is not None:
         return forbidden
 
@@ -186,7 +208,13 @@ def update_transaction(transaction_id: uuid.UUID):
     if transaction is None:
         return {"error": "transaction not found"}, 404
 
-    forbidden = require_owner_or(_transaction_owner_id(transaction))
+    account = db.session.get(Account, transaction.account_id)
+    if account is None:
+        return {"error": "account not found"}, 404
+    if account.business_id is not None:
+        forbidden = require_business_member(account.business_id)
+    else:
+        forbidden = require_owner_or(account.user_id)
     if forbidden is not None:
         return forbidden
 
@@ -203,8 +231,12 @@ def update_transaction(transaction_id: uuid.UUID):
             account = db.session.get(Account, new_account_id)
             if account is None:
                 return {"error": "account not found"}, 404
-            if account.user_id != current_user_id:
-                return {"error": "forbidden"}, 403
+            if account.business_id is not None:
+                forbidden = require_business_member(account.business_id)
+            else:
+                forbidden = require_owner_or(account.user_id)
+            if forbidden is not None:
+                return forbidden
             transaction.account_id = new_account_id
 
         if "category_id" in payload:
@@ -221,7 +253,18 @@ def update_transaction(transaction_id: uuid.UUID):
                     return {"error": "category not found"}, 404
                 account = db.session.get(Account, transaction.account_id)
                 if category.user_id != account.user_id:
-                    return {"error": "category does not belong to user"}, 400
+                    if account.business_id is not None:
+                        from ..models import BusinessMember
+                        is_cat_user_member = db.session.scalar(
+                            select(BusinessMember.user_id).where(
+                                BusinessMember.business_id == account.business_id,
+                                BusinessMember.user_id == category.user_id
+                            )
+                        ) is not None
+                        if not is_cat_user_member:
+                            return {"error": "category does not belong to user"}, 400
+                    else:
+                        return {"error": "category does not belong to user"}, 400
                 transaction.category_id = new_category_id
 
         if "amount" in payload:
@@ -276,7 +319,13 @@ def delete_transaction(transaction_id: uuid.UUID):
     if transaction is None:
         return {"error": "transaction not found"}, 404
 
-    forbidden = require_owner_or(_transaction_owner_id(transaction))
+    account = db.session.get(Account, transaction.account_id)
+    if account is None:
+        return {"error": "account not found"}, 404
+    if account.business_id is not None:
+        forbidden = require_business_member(account.business_id)
+    else:
+        forbidden = require_owner_or(account.user_id)
     if forbidden is not None:
         return forbidden
 
@@ -299,9 +348,19 @@ def list_transactions(user_id: uuid.UUID):
     Returns only transactions on accounts owned by ``user_id`` and does not
     trust any client-supplied ownership hint. Owner only.
     """
-    forbidden = require_owner_or(user_id)
-    if forbidden is not None:
-        return forbidden
+    business_id_raw = request.args.get("business_id")
+    if business_id_raw:
+        try:
+            business_id = uuid.UUID(business_id_raw)
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "business_id must be a valid UUID"}, 400
+        forbidden = require_business_data_access(business_id, user_id)
+        if forbidden is not None:
+            return forbidden
+    else:
+        forbidden = require_owner_or(user_id)
+        if forbidden is not None:
+            return forbidden
 
     try:
         user = db.session.get(User, user_id)
@@ -357,7 +416,10 @@ def list_transactions(user_id: uuid.UUID):
     if page_size < 1 or page_size > 100:
         return {"error": "page_size must be an integer between 1 and 100"}, 400
 
-    conditions = [Account.user_id == user_id]
+    if business_id_raw:
+        conditions = [Account.business_id == business_id]
+    else:
+        conditions = [Account.user_id == user_id, Account.business_id.is_(None)]
     if transaction_type is not None:
         conditions.append(Transaction.transaction_type == transaction_type)
     if date_from is not None:
@@ -404,3 +466,52 @@ def list_transactions(user_id: uuid.UUID):
         "page": page,
         "page_size": page_size,
     }, 200
+
+
+@users_bp.get("/<uuid:user_id>/transactions/<uuid:transaction_id>")
+@jwt_required()
+def get_user_transaction(user_id: uuid.UUID, transaction_id: uuid.UUID):
+    """Fetch a single transaction inside a user's business scope.
+
+    Mirrors ``list_transactions``: ownership/business identity is bound to the
+    URL ``user_id`` (never client-hinted) and the transaction must live inside
+    that scope. Out-of-scope transactions resolve to the generic 404 so
+    foreign resource existence is never leaked.
+    """
+    business_id = None
+    business_id_raw = request.args.get("business_id")
+    if business_id_raw:
+        try:
+            business_id = uuid.UUID(business_id_raw)
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "business_id must be a valid UUID"}, 400
+        forbidden = require_business_data_access(business_id, user_id)
+        if forbidden is not None:
+            return forbidden
+    else:
+        forbidden = require_owner_or(user_id)
+        if forbidden is not None:
+            return forbidden
+
+    try:
+        transaction = db.session.get(Transaction, transaction_id)
+        account = (
+            db.session.get(Account, transaction.account_id)
+            if transaction is not None
+            else None
+        )
+    except SQLAlchemyError:
+        current_app.logger.exception("transaction lookup failed")
+        return {"error": "internal server error"}, 500
+
+    if transaction is None or account is None:
+        return {"error": "transaction not found"}, 404
+
+    if business_id is not None:
+        if account.business_id != business_id:
+            return {"error": "transaction not found"}, 404
+    else:
+        if account.user_id != user_id:
+            return {"error": "transaction not found"}, 404
+
+    return _serialize_transaction(transaction), 200

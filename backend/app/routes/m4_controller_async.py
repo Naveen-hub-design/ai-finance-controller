@@ -35,6 +35,8 @@ from ..auth import get_current_user_id
 from ..celery_client import dispatch_ai_controller, task_result
 from ..extensions import db
 from ..models import ControllerTask, User
+from ..services.openai_provider import AIConfigurationError
+from ._authorization import require_business_data_access
 from ._ownership import FORBIDDEN, require_owner_or
 from .m4_controller import _intent_from_payload
 
@@ -54,9 +56,20 @@ m4_controller_async_bp = Blueprint(
 @jwt_required()
 def post_ai_controller_async(user_id: uuid.UUID):
     """Validate input, verify ownership, and dispatch the async controller task."""
-    forbidden = require_owner_or(user_id)
-    if forbidden is not None:
-        return forbidden
+    business_id_raw = request.args.get("business_id")
+    business_id = None
+    if business_id_raw:
+        try:
+            business_id = uuid.UUID(business_id_raw)
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "business_id must be a valid UUID"}, 400
+        forbidden = require_business_data_access(business_id, user_id)
+        if forbidden is not None:
+            return forbidden
+    else:
+        forbidden = require_owner_or(user_id)
+        if forbidden is not None:
+            return forbidden
 
     payload = request.get_json(silent=True)
 
@@ -76,7 +89,7 @@ def post_ai_controller_async(user_id: uuid.UUID):
     if user is None:
         return {"error": "user not found"}, 404
 
-    result = dispatch_ai_controller(str(user_id), intent_or_error)
+    result = dispatch_ai_controller(str(user_id), intent_or_error, business_id=business_id)
 
     # M7.5: bind the dispatched task to the authenticated owner. The identity
     # is resolved exclusively from the verified JWT (never a client value) and
@@ -88,6 +101,7 @@ def post_ai_controller_async(user_id: uuid.UUID):
             ControllerTask(
                 task_id=uuid.UUID(str(result.id)),
                 user_id=get_current_user_id(),
+                business_id=business_id,
             )
         )
         db.session.commit()
@@ -112,10 +126,12 @@ def get_ai_controller_task_status(user_id: uuid.UUID, task_id: uuid.UUID):
     This endpoint never blocks waiting for a running task and only reads the
     already-completed result when the task reached ``SUCCESS``.
 
-    M7.4 authorizes the caller against the URL ``user_id``. M7.5 additionally
-    verifies, before any ``AsyncResult`` access, that the task id is bound to
-    the authenticated owner; an unknown id or one owned by another user is
-    rejected identically so task existence is never revealed.
+    Authorization is task-scope aware. The task's persisted scope is the
+    source of truth: a business-scoped task is readable by members of that
+    business (identity-bound to the URL ``user_id``); a personal task remains
+    owner-only. An unknown task id is rejected identically so task existence
+    is never revealed, and the Celery ``AsyncResult`` is only touched after
+    the task-scope check passes.
     """
     forbidden = require_owner_or(user_id)
     if forbidden is not None:
@@ -130,10 +146,10 @@ def get_ai_controller_task_status(user_id: uuid.UUID, task_id: uuid.UUID):
     if user is None:
         return {"error": "user not found"}, 404
 
-    # M7.5: the task id must be owned by the authenticated user before any
-    # Celery result is retrieved. An unknown task id and one belonging to
-    # another user return the same forbidden response, so neither Redis task
-    # data nor ownership details leak to an unauthorized caller.
+    # M7.5: the task id must be authorized before any Celery result is
+    # retrieved. An unknown task id and one outside the caller's scope return
+    # the same forbidden response, so neither Redis task data nor ownership
+    # details leak to an unauthorized caller.
     try:
         owner = get_current_user_id()
         owned = db.session.query(ControllerTask).filter_by(
@@ -143,7 +159,14 @@ def get_ai_controller_task_status(user_id: uuid.UUID, task_id: uuid.UUID):
         current_app.logger.exception("task ownership lookup failed")
         return {"error": "internal server error"}, 500
 
-    if owned is None or owned.user_id != owner:
+    if owned is None:
+        return FORBIDDEN
+
+    if owned.business_id is not None:
+        forbidden = require_business_data_access(owned.business_id, user_id)
+        if forbidden is not None:
+            return forbidden
+    elif owned.user_id != owner:
         return FORBIDDEN
 
     result = task_result(str(task_id))
@@ -157,6 +180,20 @@ def get_ai_controller_task_status(user_id: uuid.UUID, task_id: uuid.UUID):
         }, 200
 
     if state == "FAILURE":
+        # Keep the documented generic message for every real failure, but give
+        # the known-global "provider not configured" case the same explicit
+        # contract the synchronous AI endpoints already return (503) so the
+        # frontend can show a clear "AI unavailable" state instead of an
+        # opaque failure. Only the exception type is inspected -- never its
+        # internal message, traceback, or payload.
+        try:
+            failed = result.result
+            if isinstance(failed, AIConfigurationError):
+                return {"error": "AI provider is not configured"}, 503
+        except Exception:
+            current_app.logger.exception(
+                "could not classify failed controller task"
+            )
         return {
             "task_id": str(task_id),
             "status": "FAILURE",

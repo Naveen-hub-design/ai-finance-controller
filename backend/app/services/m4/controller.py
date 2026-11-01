@@ -82,12 +82,12 @@ def _safe_intent_str(intent: Any) -> str:
     return str(intent)
 
 
-def _build_context(user_id) -> Dict[str, Any]:
+def _build_context(user_id, business_id=None) -> Dict[str, Any]:
     """Combine the three deterministic inputs into a controller context."""
     return {
-        "financial_context": build_financial_context(user_id),
-        "risk_signals": run_risk_intelligence(user_id),
-        "recommendations": run_recommendations(user_id),
+        "financial_context": build_financial_context(user_id, business_id),
+        "risk_signals": run_risk_intelligence(user_id, business_id),
+        "recommendations": run_recommendations(user_id, business_id),
     }
 
 
@@ -359,12 +359,13 @@ def _report_from_text(
     )
 
 
-def build_controller_report(user_id, intent: str) -> FinancialControllerReport:
+def build_controller_report(user_id, intent: str, business_id=None) -> FinancialControllerReport:
     """Orchestrate the AI finance controller and return an immutable report.
 
     Args:
         user_id: Identifier of the user (UUID, string, or equivalent).
         intent: The user's intent / question, treated as untrusted content.
+        business_id: Optional business scope.
 
     Returns:
         A :class:`FinancialControllerReport` compatible with
@@ -377,7 +378,7 @@ def build_controller_report(user_id, intent: str) -> FinancialControllerReport:
     user_id_str = str(user_id)
     intent_str = _safe_intent_str(intent)
 
-    context = _build_context(user_id)
+    context = _build_context(user_id, business_id)
     source_facts = _build_source_facts(context)
 
     system_prompt = build_controller_system_prompt()

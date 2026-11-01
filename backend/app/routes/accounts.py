@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from ..auth import get_current_user_id
 from ..extensions import db
 from ..models import Account, User
+from ._authorization import require_business_data_access, require_business_member
 from ._ownership import require_owner_or
 from .users import users_bp
 
@@ -30,6 +31,7 @@ def _serialize_account(account: Account) -> dict:
     return {
         "id": str(account.id),
         "user_id": str(account.user_id),
+        "business_id": str(account.business_id) if account.business_id is not None else None,
         "name": account.name,
         "account_type": account.account_type,
         "currency": account.currency,
@@ -87,6 +89,18 @@ def create_account():
     if balance < 0:
         return {"error": "current_balance cannot be negative"}, 400
 
+    business_id = None
+    if "business_id" in payload:
+        business_id_raw = payload.get("business_id")
+        if business_id_raw is not None:
+            try:
+                business_id = uuid.UUID(str(business_id_raw))
+            except (ValueError, AttributeError, TypeError):
+                return {"error": "business_id must be a valid UUID"}, 400
+            forbidden = require_business_member(business_id)
+            if forbidden is not None:
+                return forbidden
+
     try:
         user = db.session.get(User, current_user_id)
 
@@ -95,6 +109,7 @@ def create_account():
 
         account = Account(
             user_id=current_user_id,
+            business_id=business_id,
             name=name,
             account_type=account_type,
             currency=currency,
@@ -129,7 +144,10 @@ def get_account(account_id: uuid.UUID):
     if account is None:
         return {"error": "account not found"}, 404
 
-    forbidden = require_owner_or(account.user_id)
+    if account.business_id is not None:
+        forbidden = require_business_member(account.business_id)
+    else:
+        forbidden = require_owner_or(account.user_id)
     if forbidden is not None:
         return forbidden
 
@@ -153,7 +171,10 @@ def update_account(account_id: uuid.UUID):
     if account is None:
         return {"error": "account not found"}, 404
 
-    forbidden = require_owner_or(account.user_id)
+    if account.business_id is not None:
+        forbidden = require_business_member(account.business_id)
+    else:
+        forbidden = require_owner_or(account.user_id)
     if forbidden is not None:
         return forbidden
 
@@ -161,6 +182,10 @@ def update_account(account_id: uuid.UUID):
     if "user_id" in payload:
         if isinstance(payload["user_id"], str) and payload["user_id"]:
             return {"error": "forbidden"}, 403
+        return {"error": "forbidden"}, 403
+
+    # Business scope cannot be changed via update.
+    if "business_id" in payload:
         return {"error": "forbidden"}, 403
 
     if "name" in payload:
@@ -212,7 +237,10 @@ def delete_account(account_id: uuid.UUID):
     if account is None:
         return {"error": "account not found"}, 404
 
-    forbidden = require_owner_or(account.user_id)
+    if account.business_id is not None:
+        forbidden = require_business_member(account.business_id)
+    else:
+        forbidden = require_owner_or(account.user_id)
     if forbidden is not None:
         return forbidden
 
@@ -231,9 +259,19 @@ def delete_account(account_id: uuid.UUID):
 @jwt_required()
 def list_accounts(user_id: uuid.UUID):
     """List all accounts belonging to a user (owner only)."""
-    forbidden = require_owner_or(user_id)
-    if forbidden is not None:
-        return forbidden
+    business_id_raw = request.args.get("business_id")
+    if business_id_raw:
+        try:
+            business_id = uuid.UUID(business_id_raw)
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "business_id must be a valid UUID"}, 400
+        forbidden = require_business_data_access(business_id, user_id)
+        if forbidden is not None:
+            return forbidden
+    else:
+        forbidden = require_owner_or(user_id)
+        if forbidden is not None:
+            return forbidden
 
     try:
         user = db.session.get(User, user_id)
@@ -245,15 +283,19 @@ def list_accounts(user_id: uuid.UUID):
         return {"error": "user not found"}, 404
 
     try:
-        accounts = (
-            db.session.execute(
+        if business_id_raw:
+            stmt = (
                 select(Account)
-                .where(Account.user_id == user_id)
+                .where(Account.business_id == business_id)
                 .order_by(Account.created_at.asc(), Account.id.asc())
             )
-            .scalars()
-            .all()
-        )
+        else:
+            stmt = (
+                select(Account)
+                .where(Account.user_id == user_id, Account.business_id.is_(None))
+                .order_by(Account.created_at.asc(), Account.id.asc())
+            )
+        accounts = db.session.execute(stmt).scalars().all()
     except SQLAlchemyError:
         current_app.logger.exception("account list failed")
         return {"error": "internal server error"}, 500

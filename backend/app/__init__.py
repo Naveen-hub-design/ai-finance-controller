@@ -7,6 +7,7 @@ from .extensions import db, jwt
 from . import jwt_handlers  # noqa: F401  (registers JWT error handlers)
 from .routes.health import health_bp
 from .routes.users import users_bp
+from .routes.businesses import businesses_bp
 from .routes.accounts import accounts_bp
 from .routes.transactions import transactions_bp
 from .routes.categories import categories_bp
@@ -22,7 +23,9 @@ from .routes.m4_risk import m4_risk_bp
 from .routes.m4_recommendations import m4_recommendations_bp
 from .routes.m4_controller import m4_controller_bp
 from .routes.m4_controller_async import m4_controller_async_bp
+from .routes.m4_reconcile import m4_reconcile_bp
 from .routes.m4_audit import m4_audit_bp
+from .routes.admin import admin_bp
 from . import models  # noqa: F401
 
 
@@ -36,6 +39,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
     app.register_blueprint(health_bp)
     app.register_blueprint(users_bp)
+    app.register_blueprint(businesses_bp)
     app.register_blueprint(accounts_bp)
     app.register_blueprint(transactions_bp)
     app.register_blueprint(categories_bp)
@@ -49,6 +53,8 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     app.register_blueprint(m4_recommendations_bp)
     app.register_blueprint(m4_controller_bp)
     app.register_blueprint(m4_controller_async_bp)
+    app.register_blueprint(m4_reconcile_bp)
     app.register_blueprint(m4_audit_bp)
+    app.register_blueprint(admin_bp)
 
     return app

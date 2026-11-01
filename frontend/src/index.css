@@ -4,11 +4,79 @@
 
 @layer base {
   :root {
+    color-scheme: light;
+
+    --background: #f4f6fb;
+    --surface: #ffffff;
+    --surface-raised: #eef2f9;
+    --surface-hover: #e7edf6;
+    --border: #e2e8f0;
+    --border-strong: #cbd5e1;
+    --muted: #5b6b83;
+    --muted-faint: #8494ab;
+    --foreground: #0f172a;
+
+    --accent-50: #eef4ff;
+    --accent-100: #dbe6fe;
+    --accent-200: #bfd2fd;
+    --accent-300: #96b3fb;
+    --accent-400: #6a8ef7;
+    --accent-500: #3f6df0;
+    --accent-600: #2b54dd;
+    --accent-700: #2443c4;
+    --accent-800: #20379c;
+    --accent-900: #1e327d;
+
+    --success-500: #22c55e;
+    --success-600: #16a34a;
+    --warning-500: #f59e0b;
+    --warning-600: #d97706;
+    --danger-400: #ef4444;
+    --danger-500: #dc2626;
+    --danger-600: #b91c1c;
+  }
+
+  [data-theme="dark"] {
     color-scheme: dark;
+
+    --background: #0a0e17;
+    --surface: #111726;
+    --surface-raised: #182032;
+    --surface-hover: #1e2740;
+    --border: #232c42;
+    --border-strong: #2f3a55;
+    --muted: #8b95ab;
+    --muted-faint: #5b6578;
+    --foreground: #e8ecf4;
+
+    --accent-50: #e7f0ff;
+    --accent-100: #cfe0ff;
+    --accent-200: #a5c7ff;
+    --accent-300: #76a8ff;
+    --accent-400: #4d87f5;
+    --accent-500: #2f6fe6;
+    --accent-600: #1f58c4;
+    --accent-700: #1b4699;
+    --accent-800: #1a3a78;
+    --accent-900: #182c57;
+
+    --success-500: #34d399;
+    --success-600: #10b981;
+    --warning-500: #fbbf24;
+    --warning-600: #f59e0b;
+    --danger-400: #f87171;
+    --danger-500: #ef4444;
+    --danger-600: #dc2626;
   }
 
   * {
     border-color: theme("colors.border");
+  }
+
+  *,
+  ::before,
+  ::after {
+    box-sizing: border-box;
   }
 
   html {
@@ -19,12 +87,45 @@
     margin: 0;
     min-height: 100vh;
     background-color: theme("colors.background");
+    background-image:
+      radial-gradient(
+        1200px 480px at 50% -160px,
+        rgba(47, 111, 230, 0.08),
+        transparent 70%
+      );
+    background-repeat: no-repeat;
     color: theme("colors.foreground");
     font-family: theme("fontFamily.sans");
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
+    overflow-wrap: anywhere;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+
+  p,
+  li,
+  dd,
+  dt {
+    text-wrap: pretty;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 
   ::selection {
@@ -61,8 +162,36 @@
     box-shadow: theme("boxShadow.card");
   }
 
+  /* Applied to <html> only while a theme switch is in progress, so the toggle
+     feels smooth without paying a permanent transition cost. Disabled by the
+     global prefers-reduced-motion rule above. */
+  html.theme-transition *,
+  html.theme-transition *::before,
+  html.theme-transition *::after {
+    transition:
+      background-color 180ms ease,
+      border-color 180ms ease,
+      color 180ms ease,
+      fill 180ms ease,
+      stroke 180ms ease,
+      box-shadow 180ms ease !important;
+  }
+
   .focus-ring {
     box-shadow: theme("boxShadow.focus");
+  }
+
+  .card-interactive {
+    transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease,
+      transform 150ms ease;
+  }
+
+  .card-interactive:hover {
+    border-color: theme("colors.border-strong");
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset,
+      0 10px 28px -14px rgba(0, 0, 0, 0.7);
   }
 
   .skip-link {
@@ -87,5 +216,136 @@
     transform: translateY(0);
     opacity: 1;
     pointer-events: auto;
+  }
+}
+
+@keyframes aifc-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(24px, -18px, 0) scale(1.08);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes aifc-drift-reverse {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+  50% {
+    transform: translate3d(-22px, 20px, 0) scale(0.96);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+}
+
+@keyframes aifc-gradient-pan {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes aifc-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes aifc-particle {
+  0% {
+    opacity: 0;
+    transform: translateY(0);
+  }
+  20% {
+    opacity: 0.7;
+  }
+  80% {
+    opacity: 0.4;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-120px);
+  }
+}
+
+@keyframes aifc-float {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-18px) rotate(2deg);
+  }
+}
+
+@keyframes aifc-float-reverse {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(14px) rotate(-2deg);
+  }
+}
+
+@keyframes aifc-glow-pulse {
+  0%, 100% {
+    opacity: 0.12;
+  }
+  50% {
+    opacity: 0.22;
+  }
+}
+
+@layer utilities {
+  .animate-drift {
+    animation: aifc-drift 18s ease-in-out infinite;
+  }
+  .animate-drift-reverse {
+    animation: aifc-drift-reverse 22s ease-in-out infinite;
+  }
+  .animate-gradient-pan {
+    background-size: 200% 200%;
+    animation: aifc-gradient-pan 20s ease infinite;
+  }
+  .animate-rise {
+    animation: aifc-rise 0.5s ease-out both;
+  }
+  .animate-float {
+    animation: aifc-float 8s ease-in-out infinite;
+  }
+  .animate-float-reverse {
+    animation: aifc-float-reverse 10s ease-in-out infinite;
+  }
+  .animate-glow-pulse {
+    animation: aifc-glow-pulse 4s ease-in-out infinite;
+  }
+  .animation-delay-150 {
+    animation-delay: 150ms;
+  }
+  .animation-delay-300 {
+    animation-delay: 300ms;
+  }
+  .animation-delay-450 {
+    animation-delay: 450ms;
+  }
+  .animation-delay-600 {
+    animation-delay: 600ms;
+  }
+  .particle {
+    animation: aifc-particle 6s ease-in infinite;
   }
 }

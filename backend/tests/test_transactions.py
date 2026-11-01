@@ -321,6 +321,57 @@ def test_get_nonexistent_transaction_returns_404(client: FlaskClient) -> None:
     assert response.get_json()["error"] == "transaction not found"
 
 
+# ── GET /api/users/<uuid:user_id>/transactions/<uuid:transaction_id> ────
+
+
+def _create_transaction(client: FlaskClient, account_id: str, token: str) -> dict:
+    response = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account_id,
+            "amount": "199.99",
+            "transaction_type": "expense",
+            "transaction_date": "2026-08-24",
+        },
+        headers=_headers(token),
+    )
+    assert response.status_code == 201, response.get_json()
+    return response.get_json()
+
+
+def test_get_user_transaction_owner_only(client: FlaskClient) -> None:
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
+    tx = _create_transaction(client, account["id"], token)
+
+    r = client.get(
+        f"/api/users/{user['id']}/transactions/{tx['id']}",
+        headers=_headers(token),
+    )
+    assert r.status_code == 200
+    assert r.get_json()["id"] == tx["id"]
+
+
+def test_get_user_transaction_forbids_another_users_scope(client: FlaskClient) -> None:
+    user, token = _create_user(client)
+    account = _create_account(client, user["id"], token)
+    tx = _create_transaction(client, account["id"], token)
+
+    other, other_token = _auth(client, email="other@example.com")
+    # The other user's scope cannot resolve this transaction.
+    r = client.get(
+        f"/api/users/{other['id']}/transactions/{tx['id']}",
+        headers=_headers(other_token),
+    )
+    assert r.status_code == 404
+    # Nor can the owner's transaction be fetched under the other user's path.
+    r = client.get(
+        f"/api/users/{user['id']}/transactions/{tx['id']}",
+        headers=_headers(other_token),
+    )
+    assert r.status_code in (403, 404)
+
+
 # ── PUT /api/transactions/<uuid:transaction_id> ──────────────────────
 
 

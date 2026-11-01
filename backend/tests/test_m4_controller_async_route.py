@@ -20,7 +20,8 @@ from flask.testing import FlaskClient
 from app import celery_client
 from app.celery_client import dispatch_ai_controller
 from app.extensions import db
-from app.models import ControllerTask
+from app.models import Business, BusinessMember, ControllerTask, User
+from app.services.openai_provider import AIConfigurationError
 
 
 def _create_user(
@@ -413,6 +414,25 @@ def test_status_failure_returns_safe_message(client: FlaskClient) -> None:
     assert "RuntimeError" not in data["message"]
 
 
+def test_status_failure_when_ai_not_configured_returns_503(client: FlaskClient) -> None:
+    user = _create_user(client)
+    task_id = str(uuid.uuid4())
+    _seed_owned_task(client, user["id"], task_id)
+    fake = _TaskResult(
+        "FAILURE", result=AIConfigurationError("AI provider is not configured")
+    )
+
+    with patch("app.routes.m4_controller_async.task_result", return_value=fake):
+        response = client.get(
+            f"/api/users/{user['id']}/ai-controller/async/{task_id}",
+            headers=_headers(user["_token"]),
+        )
+
+    assert response.status_code == 503
+    data = response.get_json()
+    assert data["error"] == "AI provider is not configured"
+
+
 # ---------------------------------------------------------------------------
 # Status — result isolation (only retrieved on SUCCESS)
 # ---------------------------------------------------------------------------
@@ -467,6 +487,199 @@ def test_result_retrieved_only_for_success(client: FlaskClient) -> None:
 
     assert fake.result_accessed is True
     assert response.get_json()["result"] == payload
+
+
+# ---------------------------------------------------------------------------
+# Business scope: submission binds the business; poll is business-scoped
+# ---------------------------------------------------------------------------
+
+
+def _seed_identity(client: FlaskClient, email: str, role: str = "MERCHANT") -> str:
+    with client.application.app_context():
+        u = User(email=email, full_name="Biz Async User", role=role)
+        db.session.add(u)
+        db.session.commit()
+        return str(u.id)
+
+
+def _seed_business(client: FlaskClient, name: str) -> str:
+    with client.application.app_context():
+        b = Business(name=name)
+        db.session.add(b)
+        db.session.commit()
+        return str(b.id)
+
+
+def _seed_member(client: FlaskClient, business_id: str, user_id: str, role: str) -> None:
+    with client.application.app_context():
+        db.session.add(
+            BusinessMember(
+                business_id=uuid.UUID(business_id),
+                user_id=uuid.UUID(user_id),
+                role=role,
+            )
+        )
+        db.session.commit()
+
+
+def _seed_business_task(
+    client: FlaskClient, user_id: str, task_id: str, business_id: str
+) -> None:
+    with client.application.app_context():
+        db.session.add(
+            ControllerTask(
+                task_id=uuid.UUID(task_id),
+                user_id=uuid.UUID(user_id),
+                business_id=uuid.UUID(business_id),
+            )
+        )
+        db.session.commit()
+
+
+def test_submission_for_business_binds_business_id(client: FlaskClient) -> None:
+    owner = _create_user(client)
+    fm_id = _seed_identity(client, "ai-fm@example.com", role="FINANCE_MANAGER")
+    biz = _seed_business(client, "AI Async Ltd")
+    _seed_member(client, biz, owner["id"], "OWNER")
+    _seed_member(client, biz, fm_id, "FINANCE_MANAGER")
+    task_id = str(uuid.uuid4())
+
+    with patch(
+        "app.routes.m4_controller_async.dispatch_ai_controller",
+        return_value=_TaskResult("PENDING"),
+    ) as mock_dispatch:
+        mock_dispatch.return_value.id = task_id
+        response = client.post(
+            f"/api/users/{fm_id}/ai-controller/async?business_id={biz}",
+            json={"intent": "Why did expenses rise?"},
+            headers=_headers(_token_for(client, fm_id)),
+        )
+
+    assert response.status_code == 201
+    owned = _owned_task(client, task_id)
+    assert owned is not None
+    assert str(owned.business_id) == biz
+
+
+def test_finance_manager_roundtrip_for_permitted_business(
+    client: FlaskClient,
+) -> None:
+    owner = _create_user(client)
+    fm_id = _seed_identity(client, "ai-fm-rt@example.com", role="FINANCE_MANAGER")
+    biz = _seed_business(client, "AI Async Rt Ltd")
+    _seed_member(client, biz, owner["id"], "OWNER")
+    _seed_member(client, biz, fm_id, "FINANCE_MANAGER")
+    task_id = str(uuid.uuid4())
+
+    with patch(
+        "app.routes.m4_controller_async.dispatch_ai_controller",
+        return_value=_TaskResult("PENDING"),
+    ) as mock_dispatch:
+        mock_dispatch.return_value.id = task_id
+        r = client.post(
+            f"/api/users/{fm_id}/ai-controller/async?business_id={biz}",
+            json={"intent": "Save more"},
+            headers=_headers(_token_for(client, fm_id)),
+        )
+    assert r.status_code == 201
+
+    payload = _sample_success_result(fm_id)
+    with patch(
+        "app.routes.m4_controller_async.task_result",
+        return_value=_TaskResult("SUCCESS", result=payload),
+    ):
+        r = client.get(
+            f"/api/users/{fm_id}/ai-controller/async/{task_id}",
+            headers=_headers(_token_for(client, fm_id)),
+        )
+    assert r.status_code == 200
+    assert r.get_json()["status"] == "SUCCESS"
+    assert r.get_json()["result"] == payload
+
+
+def test_business_member_can_poll_owner_business_task(client: FlaskClient) -> None:
+    owner = _create_user(client)
+    fm_id = _seed_identity(client, "ai-fm-poll@example.com", role="FINANCE_MANAGER")
+    biz = _seed_business(client, "AI Async Share Ltd")
+    _seed_member(client, biz, owner["id"], "OWNER")
+    _seed_member(client, biz, fm_id, "FINANCE_MANAGER")
+    task_id = str(uuid.uuid4())
+    _seed_business_task(client, owner["id"], task_id, biz)
+
+    with patch(
+        "app.routes.m4_controller_async.task_result",
+        return_value=_TaskResult("PENDING"),
+    ):
+        r = client.get(
+            f"/api/users/{fm_id}/ai-controller/async/{task_id}",
+            headers=_headers(_token_for(client, fm_id)),
+        )
+    assert r.status_code == 200
+    assert r.get_json()["status"] == "PENDING"
+
+
+def test_foreign_business_task_is_forbidden_for_non_member(
+    client: FlaskClient,
+) -> None:
+    owner = _create_user(client)
+    fm_id = _seed_identity(client, "ai-fm-foreign@example.com", role="FINANCE_MANAGER")
+    own_biz = _seed_business(client, "AI Own Ltd")
+    foreign_biz = _seed_business(client, "AI Foreign Ltd")
+    _seed_member(client, own_biz, fm_id, "FINANCE_MANAGER")
+    _seed_member(client, foreign_biz, owner["id"], "OWNER")
+    task_id = str(uuid.uuid4())
+    _seed_business_task(client, owner["id"], task_id, foreign_biz)
+
+    with patch("app.routes.m4_controller_async.task_result") as mock_result:
+        r = client.get(
+            f"/api/users/{fm_id}/ai-controller/async/{task_id}",
+            headers=_headers(_token_for(client, fm_id)),
+        )
+    assert r.status_code == 403
+    mock_result.assert_not_called()
+
+
+def test_unrelated_personal_task_is_forbidden_for_member(client: FlaskClient) -> None:
+    other = _create_user(client, email="ai-other@example.com")
+    fm_id = _seed_identity(client, "ai-fm-personal@example.com", role="FINANCE_MANAGER")
+    task_id = str(uuid.uuid4())
+    _seed_owned_task(client, other["id"], task_id)
+
+    with patch("app.routes.m4_controller_async.task_result") as mock_result:
+        r = client.get(
+            f"/api/users/{fm_id}/ai-controller/async/{task_id}",
+            headers=_headers(_token_for(client, fm_id)),
+        )
+    assert r.status_code == 403
+    mock_result.assert_not_called()
+
+
+def test_platform_admin_cannot_poll_business_task(client: FlaskClient) -> None:
+    owner = _create_user(client)
+    pm_id = _seed_identity(client, "ai-pm@example.com", role="PLATFORM_ADMIN")
+    biz = _seed_business(client, "AI Admin Ltd")
+    _seed_member(client, biz, owner["id"], "OWNER")
+    task_id = str(uuid.uuid4())
+    _seed_business_task(client, owner["id"], task_id, biz)
+
+    with patch("app.routes.m4_controller_async.task_result") as mock_result:
+        r = client.get(
+            f"/api/users/{pm_id}/ai-controller/async/{task_id}",
+            headers=_headers(_token_for(client, pm_id)),
+        )
+    assert r.status_code == 403
+    mock_result.assert_not_called()
+
+
+def test_business_task_poll_requires_jwt(client: FlaskClient) -> None:
+    owner = _create_user(client)
+    biz = _seed_business(client, "AI NoAuth Ltd")
+    _seed_member(client, biz, owner["id"], "OWNER")
+    task_id = str(uuid.uuid4())
+    _seed_business_task(client, owner["id"], task_id, biz)
+
+    r = client.get(f"/api/users/{owner['id']}/ai-controller/async/{task_id}")
+    assert r.status_code == 401
 
 
 # ---------------------------------------------------------------------------

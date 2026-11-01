@@ -18,9 +18,9 @@ Design rules:
   (high, medium, low), then type, then title, then grounded amount.
 - **No LLM, no OpenAI, no DB access, no logging of financial data.**
 
-Budget-to-spending note: M2 ``budgets`` reference categories via
-``category_id`` while ``spending_by_category`` is keyed by category *name*;
-M2 facts expose no id-to-name mapping. Matching is therefore done **by
+Budget-to-spending note: M2 ``budgets`` carry both ``category_id`` and
+``category_name`` (resolved from the categories table), while
+``spending_by_category`` is keyed by category *name*. Matching is done **by
 category name**. A budget that resolves to a category name found in
 ``spending_by_category`` uses that spending; otherwise its spending is
 treated as unmatched (no overspend is claimed). This keeps the service
@@ -324,11 +324,12 @@ def _rule_goal_progress(
         )
 
 
-def run_recommendations(user_id) -> List[dict]:
-    """Return deterministic financial recommendations for a user.
+def run_recommendations(user_id, business_id=None) -> List[dict]:
+    """Return deterministic financial recommendations for a user or business.
 
     Args:
         user_id: Identifier of the user (UUID, string, or equivalent).
+        business_id: Optional business scope.
 
     Returns:
         A list of recommendation dicts, each with the shape::
@@ -346,7 +347,10 @@ def run_recommendations(user_id) -> List[dict]:
         Results are sorted by priority (high, medium, low), then type, then
         title, then grounded amount.
     """
-    facts = build_financial_facts(user_id)
+    if business_id is not None:
+        facts = build_financial_facts(user_id, business_id)
+    else:
+        facts = build_financial_facts(user_id)
     if not isinstance(facts, dict):
         return []
 

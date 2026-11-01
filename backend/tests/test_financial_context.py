@@ -175,7 +175,7 @@ def test_m2_builder_called_with_supplied_user_id():
     ) as mock_facts:
         build_financial_context("user-42")
 
-    mock_facts.assert_called_once_with("user-42")
+    mock_facts.assert_called_once_with("user-42", None)
 
 
 def test_context_builder_does_not_make_database_calls():

@@ -9,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..extensions import db
 from ..models import User
 from ..services.financial_intelligence import build_financial_facts
+from ._authorization import require_business_data_access
 from ._ownership import require_owner_or
 
 
@@ -22,9 +23,21 @@ financial_facts_bp = Blueprint(
 @financial_facts_bp.get("/<uuid:user_id>/financial-facts")
 @jwt_required()
 def get_financial_facts(user_id: uuid.UUID):
-    forbidden = require_owner_or(user_id)
-    if forbidden is not None:
-        return forbidden
+    from flask import request
+    business_id_raw = request.args.get("business_id")
+    business_id = None
+    if business_id_raw:
+        try:
+            business_id = uuid.UUID(business_id_raw)
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "business_id must be a valid UUID"}, 400
+        forbidden = require_business_data_access(business_id, user_id)
+        if forbidden is not None:
+            return forbidden
+    else:
+        forbidden = require_owner_or(user_id)
+        if forbidden is not None:
+            return forbidden
 
     try:
         user = db.session.get(User, user_id)
@@ -36,7 +49,7 @@ def get_financial_facts(user_id: uuid.UUID):
         return {"error": "user not found"}, 404
 
     try:
-        facts = build_financial_facts(user_id)
+        facts = build_financial_facts(user_id, business_id)
     except SQLAlchemyError:
         current_app.logger.exception("financial facts computation failed")
         return {"error": "internal server error"}, 500

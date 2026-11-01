@@ -32,6 +32,36 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # One-shot idempotent schema migration. /docker-entrypoint-initdb.d only runs
+  # against an empty data directory, so existing persistent volumes would never
+  # receive new schema (008, 009, ...). This service re-applies the same
+  # idempotent/additive schema files against the live database on every
+  # `docker compose up`: existing data is preserved and repeated runs are
+  # no-ops (ADD COLUMN IF NOT EXISTS / CREATE TABLE IF NOT EXISTS).
+  migrate:
+    image: ai-finance-controller/postgres:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      PGHOST: postgres
+      PGPORT: "5432"
+    volumes:
+      - ./database/schema:/schema:ro
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        for f in /schema/*.sql; do
+          echo "migrate: applying $$f"
+          psql -v ON_ERROR_STOP=1 -q -f "$$f" >/dev/null
+        done
+    restart: "no"
+
   api:
     build:
       context: ./backend
@@ -43,6 +73,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: ${OPENAI_MODEL}
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -67,7 +99,11 @@ services:
       # The worker references the same backend/app package as the API.
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       SECRET_KEY: ${SECRET_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL}
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:

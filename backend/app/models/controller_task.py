@@ -18,6 +18,10 @@ Design rules:
   deterministic and cannot expose another user's result.
 - **User scoped.** ``user_id`` references ``users.id`` with ``ON DELETE
   CASCADE``, matching the existing models.
+- **Optionally business scoped.** Tasks dispatched for a business-carried
+  job carry the business so that business members (not just the submitting
+  user) can poll the task's status. Tasks without a business stay
+  owner-only.
 - **Python/dialect-portable defaults.** A Python-side UUID default keeps
   inserts portable across dialects (the test suite runs on in-memory SQLite);
   the PostgreSQL server default is kept for inserts made outside the ORM.
@@ -51,6 +55,14 @@ class ControllerTask(db.Model):
         db.Uuid,
         db.ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+    # Optional business scope: NULL means a personal (non-business) task whose
+    # status is owner-only. Business tasks are readable by business members.
+    business_id = db.Column(
+        db.Uuid,
+        db.ForeignKey("businesses.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
     created_at = db.Column(

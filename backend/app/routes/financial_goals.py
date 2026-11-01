@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from ..auth import get_current_user_id
 from ..extensions import db
 from ..models import FinancialGoal, User
+from ._authorization import require_business_data_access, require_business_member
 from ._ownership import require_owner_or
 from .users import users_bp
 
@@ -34,6 +35,7 @@ def _serialize_goal(goal: FinancialGoal) -> dict:
     return {
         "id": str(goal.id),
         "user_id": str(goal.user_id),
+        "business_id": str(goal.business_id) if goal.business_id is not None else None,
         "name": goal.name,
         "target_amount": str(goal.target_amount),
         "current_amount": str(goal.current_amount),
@@ -64,6 +66,18 @@ def create_goal():
     current_amount_raw = payload.get("current_amount", "0")
     target_date_raw = payload.get("target_date")
     status = payload.get("status", "active")
+
+    business_id = None
+    if "business_id" in payload:
+        business_id_raw = payload.get("business_id")
+        if business_id_raw is not None:
+            try:
+                business_id = uuid.UUID(str(business_id_raw))
+            except (ValueError, AttributeError, TypeError):
+                return {"error": "business_id must be a valid UUID"}, 400
+            membership = require_business_member(business_id)
+            if membership is not None:
+                return membership
 
     # The authenticated identity is the authoritative owner. A client-supplied
     # user_id never overrides it; a mismatched one is rejected.
@@ -118,6 +132,7 @@ def create_goal():
 
         goal = FinancialGoal(
             user_id=current_user_id,
+            business_id=business_id,
             name=name,
             target_amount=target_amount,
             current_amount=current_amount,
@@ -153,7 +168,10 @@ def get_goal(goal_id: uuid.UUID):
     if goal is None:
         return {"error": "financial goal not found"}, 404
 
-    forbidden = require_owner_or(goal.user_id)
+    if goal.business_id is not None:
+        forbidden = require_business_member(goal.business_id)
+    else:
+        forbidden = require_owner_or(goal.user_id)
     if forbidden is not None:
         return forbidden
 
@@ -177,7 +195,10 @@ def update_goal(goal_id: uuid.UUID):
     if goal is None:
         return {"error": "financial goal not found"}, 404
 
-    forbidden = require_owner_or(goal.user_id)
+    if goal.business_id is not None:
+        forbidden = require_business_member(goal.business_id)
+    else:
+        forbidden = require_owner_or(goal.user_id)
     if forbidden is not None:
         return forbidden
 
@@ -249,7 +270,10 @@ def delete_goal(goal_id: uuid.UUID):
     if goal is None:
         return {"error": "financial goal not found"}, 404
 
-    forbidden = require_owner_or(goal.user_id)
+    if goal.business_id is not None:
+        forbidden = require_business_member(goal.business_id)
+    else:
+        forbidden = require_owner_or(goal.user_id)
     if forbidden is not None:
         return forbidden
 
@@ -268,9 +292,19 @@ def delete_goal(goal_id: uuid.UUID):
 @jwt_required()
 def list_goals(user_id: uuid.UUID):
     """List all financial goals belonging to a user (owner only)."""
-    forbidden = require_owner_or(user_id)
-    if forbidden is not None:
-        return forbidden
+    business_id_raw = request.args.get("business_id")
+    if business_id_raw:
+        try:
+            business_id = uuid.UUID(business_id_raw)
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "business_id must be a valid UUID"}, 400
+        forbidden = require_business_data_access(business_id, user_id)
+        if forbidden is not None:
+            return forbidden
+    else:
+        forbidden = require_owner_or(user_id)
+        if forbidden is not None:
+            return forbidden
 
     try:
         user = db.session.get(User, user_id)
@@ -282,15 +316,19 @@ def list_goals(user_id: uuid.UUID):
         return {"error": "user not found"}, 404
 
     try:
-        goals = (
-            db.session.execute(
+        if business_id_raw:
+            stmt = (
                 select(FinancialGoal)
-                .where(FinancialGoal.user_id == user_id)
+                .where(FinancialGoal.business_id == business_id)
                 .order_by(FinancialGoal.created_at.asc(), FinancialGoal.id.asc())
             )
-            .scalars()
-            .all()
-        )
+        else:
+            stmt = (
+                select(FinancialGoal)
+                .where(FinancialGoal.user_id == user_id, FinancialGoal.business_id.is_(None))
+                .order_by(FinancialGoal.created_at.asc(), FinancialGoal.id.asc())
+            )
+        goals = db.session.execute(stmt).scalars().all()
     except SQLAlchemyError:
         current_app.logger.exception("financial goal list failed")
         return {"error": "internal server error"}, 500

@@ -33,6 +33,9 @@ RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://redis:6379/1")
 # The exact task name registered by worker/tasks/ai_controller.py.
 RUN_AI_CONTROLLER_TASK = "run_ai_controller"
 
+# The exact task name registered by worker/tasks/reconciliation.py.
+RUN_RECONCILIATION_TASK = "run_reconciliation_batch"
+
 celery_client = Celery(
     "finance_worker",
     broker=BROKER_URL,
@@ -48,22 +51,46 @@ celery_client.conf.update(
 )
 
 
-def dispatch_ai_controller(user_id, intent):
+def dispatch_ai_controller(user_id, intent, business_id=None):
     """Dispatch the registered ``run_ai_controller`` task and return an AsyncResult.
 
     Args:
         user_id: The user's UUID (string or ``uuid.UUID``).
         intent: The user's intent / question for the controller.
+        business_id: Optional business scope.
 
     Returns:
         An ``AsyncResult`` whose ``.id`` is the dispatched Celery task id.
     """
+    args = [str(user_id), intent]
+    if business_id is not None:
+        args.append(str(business_id))
     return celery_client.send_task(
         RUN_AI_CONTROLLER_TASK,
-        args=[str(user_id), intent],
+        args=args,
     )
 
 
 def task_result(task_id) -> "AsyncResult":
     """Return the ``AsyncResult`` for a previously dispatched task."""
     return celery_client.AsyncResult(task_id)
+
+
+def dispatch_reconciliation(user_id, source="bank_statement", business_id=None):
+    """Dispatch the registered ``run_reconciliation_batch`` task and return an AsyncResult.
+
+    Args:
+        user_id: The user's UUID (string or ``uuid.UUID``).
+        source: The external source label to reconcile.
+        business_id: Optional business scope.
+
+    Returns:
+        An ``AsyncResult`` whose ``.id`` is the dispatched Celery task id.
+    """
+    args = [str(user_id), source]
+    if business_id is not None:
+        args.append(str(business_id))
+    return celery_client.send_task(
+        RUN_RECONCILIATION_TASK,
+        args=args,
+    )

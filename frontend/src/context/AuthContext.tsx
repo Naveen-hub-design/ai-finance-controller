@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, setAuthToken, setUnauthorizedHandler } from "../lib/api";
-import type { LoginResponse, User } from "../lib/types";
+import type { LoginResponse, Role, User } from "../lib/types";
 
 const TOKEN_KEY = "ai_finance_access_token";
 const USER_KEY = "ai_finance_current_user";
@@ -18,8 +18,13 @@ export interface AuthContextValue {
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<Role>;
+  demoLogin: (role: Role) => Promise<Role>;
   logout: () => void;
+  updateProfile: (input: {
+    email: string;
+    full_name: string | null;
+  }) => Promise<User>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -41,7 +46,19 @@ function readStoredUser(): User | null {
     ) {
       return null;
     }
-    return parsed as User;
+    const user = parsed as User;
+    // localStorage is not trusted authority. The role shown in the UI is
+    // cosmetic gating only (the backend enforces authorization). Normalize a
+    // cached role to a safe default so a stale/tampered store can never
+    // present itself as PLATFORM_ADMIN in the sidebar.
+    if (
+      user.role !== "PLATFORM_ADMIN" &&
+      user.role !== "MERCHANT" &&
+      user.role !== "FINANCE_MANAGER"
+    ) {
+      user.role = "MERCHANT";
+    }
+    return user;
   } catch {
     return null;
   }
@@ -77,11 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => setUnauthorizedHandler(null);
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const res = await api.post<LoginResponse>("/users/login", {
-      email,
-      password,
-    });
+  const establishSession = useCallback((res: LoginResponse): Role => {
     const newToken = res.access_token;
     const newUser = res.user;
     window.localStorage.setItem(TOKEN_KEY, newToken);
@@ -89,7 +102,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAuthToken(newToken);
     setToken(newToken);
     setUser(newUser);
+    return newUser.role;
   }, []);
+
+  const login = useCallback(async (email: string, password: string) => {
+    const res = await api.post<LoginResponse>("/users/login", {
+      email,
+      password,
+    });
+    return establishSession(res);
+  }, [establishSession]);
+
+  const demoLogin = useCallback(async (role: Role) => {
+    // Dev-only: the backend guards /users/demo-login so it is never available
+    // in production. It returns the same session shape as normal login, so we
+    // reuse the identical persistence path.
+    const res = await api.post<LoginResponse>("/users/demo-login", { role });
+    return establishSession(res);
+  }, [establishSession]);
 
   const logout = useCallback(() => {
     window.localStorage.removeItem(TOKEN_KEY);
@@ -99,6 +129,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  const updateProfile = useCallback(
+    async (input: { email: string; full_name: string | null }) => {
+      if (!user) throw new Error("You must be signed in to update your profile.");
+      const updated = await api.put<User>(`/users/${user.id}`, {
+        email: input.email,
+        full_name: input.full_name,
+      });
+      window.localStorage.setItem(USER_KEY, JSON.stringify(updated));
+      setUser(updated);
+      return updated;
+    },
+    [user]
+  );
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -106,9 +150,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticated: user !== null && token !== null,
       isLoading,
       login,
+      demoLogin,
       logout,
+      updateProfile,
     }),
-    [user, token, isLoading, login, logout]
+    [user, token, isLoading, login, demoLogin, logout, updateProfile]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

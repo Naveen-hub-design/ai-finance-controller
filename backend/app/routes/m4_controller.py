@@ -26,6 +26,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..extensions import db
 from ..models import User
 from ..services.m4.controller import build_controller_report
+from ..services.openai_provider import AIConfigurationError, AIProviderError
+from ._authorization import require_business_data_access
 from ._ownership import require_owner_or
 
 
@@ -53,9 +55,20 @@ def _intent_from_payload(payload):
 @m4_controller_bp.post("/<uuid:user_id>/ai-controller")
 @jwt_required()
 def post_ai_controller(user_id: uuid.UUID):
-    forbidden = require_owner_or(user_id)
-    if forbidden is not None:
-        return forbidden
+    business_id_raw = request.args.get("business_id")
+    business_id = None
+    if business_id_raw:
+        try:
+            business_id = uuid.UUID(business_id_raw)
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "business_id must be a valid UUID"}, 400
+        forbidden = require_business_data_access(business_id, user_id)
+        if forbidden is not None:
+            return forbidden
+    else:
+        forbidden = require_owner_or(user_id)
+        if forbidden is not None:
+            return forbidden
 
     payload = request.get_json(silent=True)
 
@@ -76,7 +89,13 @@ def post_ai_controller(user_id: uuid.UUID):
         return {"error": "user not found"}, 404
 
     try:
-        report = build_controller_report(user_id, intent_or_error)
+        report = build_controller_report(user_id, intent_or_error, business_id=business_id)
+    except AIConfigurationError:
+        current_app.logger.exception("AI provider is not configured")
+        return {"error": "AI provider is not configured"}, 503
+    except AIProviderError:
+        current_app.logger.exception("AI request failed")
+        return {"error": "AI request failed"}, 502
     except SQLAlchemyError:
         current_app.logger.exception("controller computation failed")
         return {"error": "internal server error"}, 500

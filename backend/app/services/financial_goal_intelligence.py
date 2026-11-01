@@ -104,36 +104,12 @@ def _build_goal_user_prompt(
     return prompt
 
 
-def build_goal_intelligence(user_id, user_question: str) -> str:
-    """Answer a user's financial-goal question using the configured AI.
-
-    Builds the user's financial context, constructs goal-specific system and
-    user prompts, sends them to the configured AI provider, and returns the
-    provider's text response unchanged.
-
-    The goal-specific behavior ensures the AI grounds its answer in the
-    supplied goal data (name, target amount, current amount, progress,
-    target date, status) and related income/expense/spending information,
-    never inventing numbers and explaining uncertainty when data is missing.
-
-    No context, prompt, or provider content is logged here. The user question
-    and financial context are passed to the prompt layer exactly as supplied
-    and never mutated.
-
-    Errors are intentionally not caught: if context building, prompt
-    construction, or the AI provider fails, the underlying exception (e.g.
-    ``AIConfigurationError`` or ``AIProviderError``) propagates to the caller
-    unchanged rather than being replaced by a fake fallback.
-
-    Args:
-        user_id: Identifier of the user (UUID, string, or equivalent).
-        user_question: The user's goal-related question, passed through
-            verbatim.
-
-    Returns:
-        The AI provider's text response as a string.
-    """
-    financial_context = build_financial_context(user_id)
+def build_goal_intelligence(user_id, user_question: str, business_id=None) -> str:
+    """Answer a user's financial-goal question using the configured AI."""
+    if business_id is not None:
+        financial_context = build_financial_context(user_id, business_id)
+    else:
+        financial_context = build_financial_context(user_id)
     system_prompt = _build_goal_system_prompt()
     user_prompt = _build_goal_user_prompt(
         financial_context,

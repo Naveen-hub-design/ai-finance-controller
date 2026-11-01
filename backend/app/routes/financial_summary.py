@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ..extensions import db
 from ..models import Account, Transaction, User
+from ._authorization import require_business_data_access
 from ._ownership import require_owner_or
 
 
@@ -23,9 +24,23 @@ financial_summary_bp = Blueprint(
 @financial_summary_bp.get("/<uuid:user_id>")
 @jwt_required()
 def get_financial_summary(user_id: uuid.UUID):
-    forbidden = require_owner_or(user_id)
-    if forbidden is not None:
-        return forbidden
+    from flask import request
+    business_id_raw = request.args.get("business_id")
+    if business_id_raw:
+        try:
+            business_id = uuid.UUID(business_id_raw)
+        except (ValueError, AttributeError, TypeError):
+            return {"error": "business_id must be a valid UUID"}, 400
+        forbidden = require_business_data_access(business_id, user_id)
+        if forbidden is not None:
+            return forbidden
+        account_filter = Account.business_id == business_id
+    else:
+        forbidden = require_owner_or(user_id)
+        if forbidden is not None:
+            return forbidden
+        from sqlalchemy import and_
+        account_filter = and_(Account.user_id == user_id, Account.business_id.is_(None))
 
     try:
         user = db.session.get(User, user_id)
@@ -41,7 +56,7 @@ def get_financial_summary(user_id: uuid.UUID):
             db.session.query(func.coalesce(func.sum(Transaction.amount), 0))
             .join(Account, Transaction.account_id == Account.id)
             .filter(
-                Account.user_id == user_id,
+                account_filter,
                 Transaction.transaction_type == "income",
             )
             .scalar()
@@ -51,7 +66,7 @@ def get_financial_summary(user_id: uuid.UUID):
             db.session.query(func.coalesce(func.sum(Transaction.amount), 0))
             .join(Account, Transaction.account_id == Account.id)
             .filter(
-                Account.user_id == user_id,
+                account_filter,
                 Transaction.transaction_type == "expense",
             )
             .scalar()
@@ -60,7 +75,7 @@ def get_financial_summary(user_id: uuid.UUID):
         transaction_count = (
             db.session.query(func.count(Transaction.id))
             .join(Account, Transaction.account_id == Account.id)
-            .filter(Account.user_id == user_id)
+            .filter(account_filter)
             .scalar()
         )
 
@@ -68,7 +83,7 @@ def get_financial_summary(user_id: uuid.UUID):
             db.session.query(func.count(Transaction.id))
             .join(Account, Transaction.account_id == Account.id)
             .filter(
-                Account.user_id == user_id,
+                account_filter,
                 Transaction.transaction_type == "income",
             )
             .scalar()
@@ -78,7 +93,7 @@ def get_financial_summary(user_id: uuid.UUID):
             db.session.query(func.count(Transaction.id))
             .join(Account, Transaction.account_id == Account.id)
             .filter(
-                Account.user_id == user_id,
+                account_filter,
                 Transaction.transaction_type == "expense",
             )
             .scalar()
@@ -88,7 +103,7 @@ def get_financial_summary(user_id: uuid.UUID):
             db.session.query(
                 func.coalesce(func.sum(Account.current_balance), 0)
             )
-            .filter(Account.user_id == user_id)
+            .filter(account_filter)
             .scalar()
         )
 
